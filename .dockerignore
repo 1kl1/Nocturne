@@ -1,8 +1,12 @@
 .git
+.env
+.env.*
+!.env.example
 .venv
 __pycache__
 *.pyc
 .pytest_cache
 .DS_Store
+_workspace
 data/*.sqlite3
 data/*.sqlite3-*

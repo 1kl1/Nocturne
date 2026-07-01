@@ -54,7 +54,7 @@ def onboarding(request: Request, notice: str | None = None, step: int = 0) -> st
             db.notification_settings_for_user(user["id"]),
             targets,
             review_acknowledged,
-            "이전 작업을 완료해야 다음 단계가 열립니다.",
+            "앞 단계가 끝나야 다음 단계가 열립니다.",
             allowed_step,
         )
     return ui.onboarding_page(
@@ -73,7 +73,7 @@ def acknowledge_review_boundary(request: Request) -> RedirectResponse:
     user = db.default_user()
     connection = db.connection_for_user(user["id"])
     if not connection["notion_access_token_encrypted"]:
-        return _redirect("/onboarding?step=0", "Notion 연결을 먼저 완료해야 합니다.")
+        return _redirect("/onboarding?step=0", "먼저 Notion을 연결해야 합니다.")
     db.execute(
         """
         INSERT INTO onboarding_progress (user_id, progress_key, acknowledged_at)
@@ -103,17 +103,17 @@ def notion_callback(request: Request, code: str | None = None, state: str | None
     if error:
         return _redirect("/account", f"Notion OAuth 오류: {error}")
     if not code or not state:
-        return _redirect("/account", "Notion OAuth callback 값이 부족합니다.")
+        return _redirect("/account", "Notion OAuth callback 값이 빠져 있습니다.")
     state_data = _read_state(state, request.app.state.settings.encryption_key)
     if state_data is None:
-        return _redirect("/account", "Notion OAuth state 검증에 실패했습니다.")
+        return _redirect("/account", "Notion OAuth state를 확인하지 못했습니다.")
     user_id = state_data["user_id"]
     return_to = state_data["return_to"]
     try:
         oauth_data = request.app.state.notion.exchange_code(code)
         request.app.state.notion.save_oauth_connection(user_id, oauth_data)
         request.app.state.db.log("notion_connected", user_id=user_id, payload={"workspace_id": oauth_data.get("workspace_id")})
-        return _redirect(return_to, "Notion 연결이 완료되었습니다.")
+        return _redirect(return_to, "Notion 연결을 완료했습니다.")
     except Exception as exc:
         return _redirect(return_to, f"Notion 연결 실패: {exc}")
 
@@ -135,7 +135,7 @@ def save_openrouter(request: Request, api_key: str = Form(...), return_to: str =
         (request.app.state.secret_box.encrypt(api_key), api_key[-4:], utc_now_iso(), user["id"]),
     )
     db.log("openrouter_key_saved", user_id=user["id"])
-    return _redirect(_safe_return(return_to, "/account"), "OpenRouter API 키가 저장되었습니다.")
+    return _redirect(_safe_return(return_to, "/account"), "OpenRouter API 키를 저장했습니다.")
 
 
 @router.post("/settings/slack-webhook")
@@ -155,7 +155,7 @@ def save_slack(request: Request, webhook_url: str = Form(...), return_to: str = 
         (request.app.state.secret_box.encrypt(webhook_url), webhook_url[-4:], utc_now_iso(), user["id"]),
     )
     db.log("slack_webhook_saved", user_id=user["id"])
-    return _redirect(_safe_return(return_to, "/notifications"), "Slack webhook이 저장되었습니다.")
+    return _redirect(_safe_return(return_to, "/notifications"), "Slack webhook을 저장했습니다.")
 
 
 @router.post("/settings/email")
@@ -175,7 +175,7 @@ def send_email_verification(request: Request, email: str = Form(...), return_to:
     except Exception as exc:
         return _redirect(_safe_return(return_to, "/notifications"), f"이메일 인증 코드 발송 실패: {exc}")
     suffix = f" 개발 코드: {dev_code}" if dev_code else ""
-    return _redirect(_safe_return(return_to, "/notifications"), f"이메일 인증 코드가 발송되었습니다.{suffix}")
+    return _redirect(_safe_return(return_to, "/notifications"), f"이메일 인증 코드를 보냈습니다.{suffix}")
 
 
 @router.post("/settings/email/verify")
@@ -184,9 +184,9 @@ def verify_email(request: Request, code: str = Form(...), return_to: str = Form(
     user = db.default_user()
     ok, error = request.app.state.email_service.verify_code(user["id"], code)
     if not ok:
-        return _redirect(_safe_return(return_to, "/notifications"), error or "이메일 인증 실패")
+        return _redirect(_safe_return(return_to, "/notifications"), error or "이메일 인증에 실패했습니다.")
     db.log("email_verified", user_id=user["id"])
-    return _redirect(_safe_return(return_to, "/notifications"), "이메일 알림이 연결되었습니다.")
+    return _redirect(_safe_return(return_to, "/notifications"), "이메일 알림을 연결했습니다.")
 
 
 @router.get("/targets", response_class=HTMLResponse)
@@ -230,11 +230,11 @@ def add_target(
             now,
         ),
     )
-    notice = "점검 대상이 추가되었습니다."
+    notice = "점검 대상을 추가했습니다."
     if notion_object_type == "page":
         try:
             request.app.state.notion.ensure_inbox_database(user["id"], notion_object_id.strip())
-            notice = "점검 대상이 추가되었고 Nocturne 수정함을 확인했습니다."
+            notice = "점검 대상을 추가하고 Nocturne 수정함을 확인했습니다."
         except Exception as exc:
             db.log("inbox_ensure_after_target_failed", user_id=user["id"], level="warning", payload={"error": str(exc)})
     return _redirect(_safe_return(return_to, "/targets"), notice)
@@ -248,7 +248,7 @@ def delete_target(request: Request, target_id: int) -> RedirectResponse:
         "UPDATE scan_targets SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
         (utc_now_iso(), target_id, user["id"]),
     )
-    return _redirect("/targets", "점검 대상이 삭제되었습니다.")
+    return _redirect("/targets", "점검 대상을 삭제했습니다.")
 
 
 @router.get("/notifications", response_class=HTMLResponse)
@@ -279,7 +279,7 @@ def update_notifications(
         (default_channel, scan_time, notify_time, timezone, 1 if notify_zero else 0, utc_now_iso(), user["id"]),
     )
     db.update("UPDATE users SET timezone = ? WHERE id = ?", (timezone, user["id"]))
-    return _redirect(_safe_return(return_to, "/notifications"), "알림 설정이 저장되었습니다.")
+    return _redirect(_safe_return(return_to, "/notifications"), "알림 설정을 저장했습니다.")
 
 
 @router.get("/runs", response_class=HTMLResponse)
@@ -332,7 +332,7 @@ def disconnect_notion(request: Request) -> RedirectResponse:
         (utc_now_iso(), user["id"]),
     )
     db.log("notion_disconnected", user_id=user["id"])
-    return _redirect("/account", "Notion 연결이 해제되었습니다.")
+    return _redirect("/account", "Notion 연결을 해제했습니다.")
 
 
 @router.post("/account/delete-local-data")
@@ -345,7 +345,7 @@ def delete_local_data(request: Request) -> RedirectResponse:
         conn.execute("UPDATE users SET last_successful_scan_at = NULL, last_scheduled_run_date = NULL WHERE id = ?", (user["id"],))
         conn.commit()
     db.initialize()
-    return _redirect("/", "로컬 데이터가 삭제되었습니다.")
+    return _redirect("/", "로컬 데이터를 삭제했습니다.")
 
 
 def _redirect(path: str, notice: str) -> RedirectResponse:

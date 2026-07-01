@@ -3,7 +3,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     APP_HOST=0.0.0.0 \
-    APP_PORT=8000 \
+    APP_PORT=8999 \
     DATABASE_URL=sqlite:////app/data/nocturne.sqlite3
 
 WORKDIR /app

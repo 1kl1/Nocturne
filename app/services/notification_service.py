@@ -57,7 +57,7 @@ class NotificationService:
         if proposal_count == 0 and held_count == 0:
             headline = "오늘은 문제 없음"
         else:
-            headline = f"오늘 발견된 제안 {proposal_count}건"
+            headline = f"오늘 찾은 제안 {proposal_count}건"
         lines = [
             f"Nocturne · {headline}",
             f"- run_id: {run.get('run_id')}",

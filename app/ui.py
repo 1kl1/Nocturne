@@ -5,7 +5,7 @@ import sqlite3
 
 from app.security import mask_secret
 
-ASSET_VERSION = "20260701b"
+ASSET_VERSION = "20260701e"
 
 
 def _escape(value: object) -> str:
@@ -78,47 +78,6 @@ def intro_page(notice: str | None = None) -> str:
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l8 7-8 7V5Z"/></svg>
       </a>
     </section>
-
-    <section class="intro-scroll" aria-label="Nocturne 작동 방식">
-      <article class="intro-panel">
-        <div class="side-photo intro-visual">
-          <div class="paper-stack">
-            <span></span><span></span><span></span>
-          </div>
-          <div class="scan-line"></div>
-        </div>
-        <div>
-          <p class="kicker">night scan</p>
-          <h2>문서가 잠든 시간에만 조용히 읽습니다.</h2>
-          <p>Nocturne는 선택한 페이지와 하위 페이지를 기준으로 최근 수정된 내용만 점검합니다.</p>
-        </div>
-      </article>
-      <article class="intro-panel reverse">
-        <div class="approval-demo" aria-hidden="true">
-          <span>대기</span>
-          <strong>문장 위치 · 근거 · 제안문</strong>
-          <span>승인</span>
-          <strong>원문 일부만 반영</strong>
-        </div>
-        <div>
-          <p class="kicker">review boundary</p>
-          <h2>원문 앞에는 항상 승인 경계가 있습니다.</h2>
-          <p>agent가 제안을 만들 수는 있지만, 사용자가 수정함에서 승인하기 전까지 원문은 그대로 유지됩니다.</p>
-        </div>
-      </article>
-      <article class="intro-panel">
-        <div class="brief-demo" aria-hidden="true">
-          <div><span>08:00</span><strong>문제 없음</strong></div>
-          <div><span>3건</span><strong>오류 1 · 누락 2</strong></div>
-          <div><span>수정함</span><strong>승인 대기</strong></div>
-        </div>
-        <div>
-          <p class="kicker">morning brief</p>
-          <h2>아침에는 Slack이나 메일로 짧게 받습니다.</h2>
-          <p>0건이어도 “문제 없음” 알림을 보낼 수 있어, 매일의 점검 루프가 끊기지 않습니다.</p>
-        </div>
-      </article>
-    </section>
   </main>
   <script src="/static/intro.js?v={ASSET_VERSION}"></script>
 </body>
@@ -153,28 +112,10 @@ def onboarding_page(
     setup_score = max_allowed
     safe_step = max(0, min(step, max_allowed, 5))
     notice_html = f'<div class="tutorial-notice">{_escape(notice)}</div>' if notice else ""
-    review_done = notion_connected and review_acknowledged
-    openrouter_done = review_done and openrouter_connected
-    targets_done = openrouter_done and has_targets
-    channels_done = targets_done and channels_connected
-    rail_items = [
-        ("Notion", "M4 12h16M12 4v16M8 8h8", notion_connected),
-        ("수정함", "M5 13l4 4L19 7", review_done),
-        ("OpenRouter", "M7 11V7a5 5 0 0 1 10 0v4M6 11h12v9H6z", openrouter_done),
-        ("대상", "M12 3l8 4v10l-8 4-8-4V7z", targets_done),
-        ("알림", "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4", channels_done),
-        ("실행", "M8 5l10 7-10 7z", max_allowed == 5),
-    ]
-    rail_html = "".join(
-        f'<button type="button" class="tutorial-dot {"done" if done else ""} {"locked" if index > max_allowed else ""}" '
-        f'data-step-target="{index}" {"disabled" if index > max_allowed else ""} aria-label="{label}">'
-        f'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg><span>{label}</span></button>'
-        for index, (label, path, done) in enumerate(rail_items)
-    )
     target_rows = "".join(
         f'<li><strong>{_escape(target["title"])}</strong><span>{_escape(target["notion_object_type"])} · {"하위 포함" if target["include_children"] else "단일 대상"}</span></li>'
         for target in targets[:4]
-    ) or "<li><strong>아직 비어 있음</strong><span>첫 점검 범위를 추가하면 여기에 고정됩니다.</span></li>"
+    ) or "<li><strong>아직 비어 있음</strong><span>첫 점검 범위를 추가하면 여기에 남습니다.</span></li>"
     back_button = """
 <button class="icon-back" type="button" data-prev aria-label="이전 단계">
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
@@ -199,12 +140,10 @@ def onboarding_page(
     {notice_html}
 
     <section class="tutorial-card">
-      <div class="tutorial-progress">{rail_html}</div>
-
         <article class="onboarding-step" data-step="0">
           <p class="kicker">01 · workspace</p>
           <h1>먼저 Notion 작업실을 연결합니다.</h1>
-          <p class="step-lede">Nocturne의 모든 일은 사용자가 허용한 Notion 범위 안에서만 시작됩니다.</p>
+          <p class="step-lede">Nocturne은 사용자가 허용한 Notion 범위 안에서만 시작합니다.</p>
           <div class="connection-hero">
             <div>
               <span>Notion</span>
@@ -220,8 +159,8 @@ def onboarding_page(
         <article class="onboarding-step" data-step="1">
           {back_button}
           <p class="kicker">02 · review boundary</p>
-          <h1>수정은 수정함에서 멈춥니다.</h1>
-          <p class="step-lede">agent는 원문 대신 `Nocturne 수정함`에 위치, 근거, 제안문을 쌓습니다.</p>
+          <h1>수정은 수정함에서 한번 멈춥니다.</h1>
+          <p class="step-lede">agent는 원문을 바로 건드리지 않고 Nocturne 수정함에 위치, 근거, 제안문을 모아 둡니다.</p>
           <div class="tutorial-board">
             <div><span>대기</span><strong>새 제안 검토</strong></div>
             <div><span>승인</span><strong>다음 실행에서 반영</strong></div>
@@ -238,8 +177,8 @@ def onboarding_page(
         <article class="onboarding-step" data-step="2">
           {back_button}
           <p class="kicker">03 · model key</p>
-          <h1>판단 비용은 내 OpenRouter 키로 처리합니다.</h1>
-          <p class="step-lede">모델은 서비스 기본값을 쓰고, 키 원문은 다시 보여주지 않습니다.</p>
+          <h1>판단 비용은 내 OpenRouter 키로 부담합니다.</h1>
+          <p class="step-lede">모델은 서비스 기본값을 쓰고 키 전체 값은 다시 보여주지 않습니다.</p>
           <form class="onboarding-form" method="post" action="/settings/openrouter">
             <input type="hidden" name="return_to" value="/onboarding?step=3">
             <label>OpenRouter API key
@@ -253,7 +192,7 @@ def onboarding_page(
           {back_button}
           <p class="kicker">04 · scope</p>
           <h1>처음 점검할 페이지를 정합니다.</h1>
-          <p class="step-lede">선택한 페이지의 하위 페이지는 기본 포함되고, 데이터베이스의 페이지도 점검 범위가 됩니다.</p>
+          <p class="step-lede">선택한 페이지의 하위 페이지는 기본으로 포함하고 데이터베이스의 페이지도 점검 범위에 넣습니다.</p>
           <form class="onboarding-form compact-form" method="post" action="/targets">
             <input type="hidden" name="return_to" value="/onboarding?step=4">
             <label>유형
@@ -284,7 +223,7 @@ def onboarding_page(
           {back_button}
           <p class="kicker">05 · morning brief</p>
           <h1>아침 알림을 받을 곳을 고릅니다.</h1>
-          <p class="step-lede">0건이어도 문제 없음 알림을 보낼 수 있습니다.</p>
+          <p class="step-lede">0건 알림도 지원합니다.</p>
           <div class="notification-duo">
             <form class="onboarding-form" method="post" action="/settings/slack-webhook">
               <input type="hidden" name="return_to" value="/onboarding?step=5">
@@ -325,7 +264,7 @@ def onboarding_page(
           {back_button}
           <p class="kicker">06 · launch</p>
           <h1>밤의 점검 루프를 켭니다.</h1>
-          <p class="step-lede">첫 실행은 기준선을 잡기 위해 선택 범위 전체를 읽습니다.</p>
+          <p class="step-lede">첫 실행에서는 기준선을 잡으려고 선택 범위 전체를 읽습니다.</p>
           <div class="launch-grid">
             <div>{status_pill(notion_connected)}<strong>Notion</strong></div>
             <div>{status_pill(openrouter_connected)}<strong>OpenRouter</strong></div>
@@ -509,7 +448,7 @@ def notifications_page(settings: sqlite3.Row, connection: sqlite3.Row, notice: s
     body = f"""
 <section class="page-head">
   <div>
-    <p class="eyebrow">Slack과 이메일 발송 정책</p>
+    <p class="eyebrow">Slack과 이메일 발송 방식</p>
     <h1>알림 설정</h1>
   </div>
 </section>
@@ -576,7 +515,7 @@ def runs_page(runs: list[sqlite3.Row], logs: list[sqlite3.Row], notice: str | No
     body = f"""
 <section class="page-head">
   <div>
-    <p class="eyebrow">Agent run과 외부 호출 기록</p>
+    <p class="eyebrow">Agent run과 외부 호출 내역</p>
     <h1>실행 로그</h1>
   </div>
   <div class="actions">

@@ -72,13 +72,13 @@ class AgentHarness:
             openrouter_key = self.secret_box.decrypt(connection["openrouter_api_key_encrypted"])
             has_channel = bool(connection["slack_webhook_url_encrypted"]) or bool(connection["notification_email_verified"])
             if not notion_token:
-                raise RuntimeError("Notion 연결이 필요합니다.")
+                raise RuntimeError("먼저 Notion을 연결해야 합니다.")
             if not openrouter_key:
-                raise RuntimeError("OpenRouter API 키가 필요합니다.")
+                raise RuntimeError("OpenRouter API 키를 먼저 등록해야 합니다.")
             if not has_channel:
-                raise RuntimeError("Slack 또는 이메일 알림 채널이 최소 1개 필요합니다.")
+                raise RuntimeError("Slack 또는 이메일 알림 채널이 하나 이상 필요합니다.")
             if not self.db.active_targets(user_id):
-                raise RuntimeError("점검 대상이 필요합니다.")
+                raise RuntimeError("점검 대상을 먼저 추가해야 합니다.")
 
             apply_result = self.applier.apply_approved(user_id, run_id)
             counts["applied_count"] = apply_result.applied
@@ -86,7 +86,7 @@ class AgentHarness:
 
             pages = self.notion.expand_targets(user_id)
             if not pages:
-                raise RuntimeError("확장된 점검 페이지가 없습니다.")
+                raise RuntimeError("점검할 페이지를 찾지 못했습니다.")
             counts["scanned_page_count"] = len(pages)
             changed_pages = [page for page in pages if self._is_changed_since_last_success(user_id, page.page_id, page.last_edited_time, last_success)]
             counts["changed_page_count"] = len(changed_pages)
@@ -94,7 +94,7 @@ class AgentHarness:
 
             inbox_id, inbox_url = self.notion.ensure_inbox_database(user_id, changed_pages[0].page_id if changed_pages else pages[0].page_id)
             if not inbox_id:
-                raise RuntimeError("Nocturne 수정함 데이터베이스를 만들 수 없습니다.")
+                raise RuntimeError("Nocturne 수정함 데이터베이스를 만들지 못했습니다.")
 
             for page in changed_pages:
                 try:

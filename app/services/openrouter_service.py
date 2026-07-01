@@ -109,7 +109,7 @@ class OpenRouterService:
             "\"block_id\":\"...\",\"original_sentence\":\"...\",\"suggested_sentence\":\"...\","
             "\"apply_mode\":\"replace|append\",\"rationale\":\"...\",\"source_urls\":[\"...\"],\"confidence\":0.0}]\n"
             "규칙:\n"
-            "- 원문 수정은 최소 범위로 제안한다.\n"
+            "- 원문은 필요한 최소 범위만 고친다.\n"
             "- replace는 original_sentence가 해당 block plain_text에 정확히 포함되어야 한다.\n"
             "- append는 original_sentence를 추가 위치의 앵커 문장으로 둔다.\n"
             "- 사실 오류는 source_urls 또는 명확한 내부 근거가 있어야 한다.\n"

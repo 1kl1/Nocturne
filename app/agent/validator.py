@@ -50,9 +50,9 @@ class ProposalValidator:
             return "제안 문장 누락"
         block = block_map.get(proposal.block_id)
         if block is None:
-            return "block_id가 이번 페이지 블록에 존재하지 않음"
+            return "block_id가 이번 페이지 블록에 없음"
         if block.page_id != proposal.source_page_id:
-            return "source_page_id와 block_id의 페이지가 일치하지 않음"
+            return "source_page_id와 block_id의 페이지가 서로 다름"
         if proposal.original_sentence and proposal.original_sentence not in block.plain_text:
             return "원문 문장이 현재 블록에 없음"
         if proposal.apply_mode == "replace" and not proposal.original_sentence:
@@ -62,7 +62,7 @@ class ProposalValidator:
         if proposal.confidence < 0 or proposal.confidence > 1:
             return "확신도가 0~1 범위를 벗어남"
         if proposal.apply_mode == "replace" and len(proposal.suggested_sentence) > max(160, len(proposal.original_sentence) * 4):
-            return "제안 문장이 원문 대비 과도하게 김"
+            return "제안 문장이 원문보다 지나치게 김"
         original_hash = stable_hash(proposal.original_sentence)
         suggested_hash = stable_hash(proposal.suggested_sentence)
         if self.db.proposal_exists(user_id, proposal.source_page_id, proposal.block_id, original_hash, suggested_hash):

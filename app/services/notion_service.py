@@ -71,7 +71,7 @@ class NotionService:
 
     def oauth_start_url(self, state: str) -> str:
         if not self.settings.notion_oauth_configured:
-            raise NotionError("Notion OAuth 환경변수가 설정되지 않았습니다.")
+            raise NotionError("Notion OAuth 환경변수가 설정되어 있지 않습니다.")
         query = urllib.parse.urlencode(
             {
                 "client_id": self.settings.notion_client_id,
@@ -133,7 +133,7 @@ class NotionService:
     def _headers(self, user_id: int) -> dict[str, str]:
         token = self.token_for_user(user_id)
         if not token:
-            raise NotionError("Notion 연결이 필요합니다.")
+            raise NotionError("먼저 Notion을 연결해야 합니다.")
         return {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION}
 
     def _request(self, user_id: int, method: str, path: str, payload: Any = None, retries: int = 2) -> Any:
@@ -490,7 +490,7 @@ class NotionService:
         parent = block.get("parent") or {}
         parent_id = parent.get("page_id") or parent.get("block_id")
         if not parent_id:
-            raise NotionError("추가 위치를 확인할 수 없습니다.")
+            raise NotionError("추가 위치를 확인하지 못했습니다.")
         payload = {
             "after": block_id,
             "children": [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_text(suggested)]}}],

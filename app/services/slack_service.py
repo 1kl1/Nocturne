@@ -6,7 +6,7 @@ from app.services.http_client import ExternalAPIError, request_json
 class SlackService:
     def test_webhook(self, webhook_url: str) -> tuple[bool, str | None]:
         try:
-            self.send(webhook_url, "Nocturne Slack 알림이 연결되었습니다.")
+            self.send(webhook_url, "Nocturne Slack 알림을 연결했습니다.")
             return True, None
         except ExternalAPIError as exc:
             return False, exc.body or str(exc)
