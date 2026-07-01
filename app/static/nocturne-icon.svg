@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Nocturne</title>
+  <desc id="desc">A moonlit document scanner icon for Nocturne.</desc>
+  <rect width="128" height="128" rx="28" fill="#050505"/>
+  <path d="M80 20a30 30 0 1 0 28 41 24 24 0 1 1-28-41Z" fill="#c8ff49"/>
+  <rect x="25" y="45" width="58" height="68" rx="7" fill="#fff7df" stroke="#050505" stroke-width="4"/>
+  <path d="M36 63h36M36 79h44M36 95h28" stroke="#050505" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="98" cy="96" r="10" fill="#c8ff49" stroke="#050505" stroke-width="4"/>
+</svg>
