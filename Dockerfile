@@ -20,6 +20,6 @@ COPY README.md .
 
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+EXPOSE 8999
 
-CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host ${APP_HOST:-0.0.0.0} --port ${APP_PORT:-8999}"]
