@@ -8,7 +8,7 @@ import urllib.parse
 from hashlib import sha256
 
 from fastapi import APIRouter, BackgroundTasks, Form, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from app.time_utils import utc_now_iso
 from app import ui
@@ -37,7 +37,33 @@ def dashboard_page(request: Request, notice: str | None = None) -> str:
     settings = db.notification_settings_for_user(user["id"])
     targets = db.active_targets(user["id"])
     runs = db.rows("SELECT * FROM runs WHERE user_id = ? ORDER BY created_at DESC LIMIT 5", (user["id"],))
-    return ui.dashboard(user, connection, settings, targets, runs, notice)
+    improvements = db.rows(
+        """
+        SELECT
+            pc.source_page_id,
+            COALESCE(MAX(st.title), '') AS source_title,
+            COUNT(*) AS proposal_count,
+            SUM(CASE WHEN pc.status IN ('대기', '보류') THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN pc.status = '승인' THEN 1 ELSE 0 END) AS approved_count,
+            SUM(CASE WHEN pc.status = '반영 실패' THEN 1 ELSE 0 END) AS failed_count,
+            SUM(CASE WHEN pc.issue_type = 'error' THEN 1 ELSE 0 END) AS error_count,
+            SUM(CASE WHEN pc.issue_type = 'omission' THEN 1 ELSE 0 END) AS omission_count,
+            SUM(CASE WHEN pc.issue_type = 'contradiction' THEN 1 ELSE 0 END) AS contradiction_count,
+            MAX(pc.confidence) AS max_confidence,
+            MAX(pc.created_at) AS latest_created_at,
+            MAX(pc.notion_proposal_page_id) AS notion_proposal_page_id
+        FROM proposals_cache pc
+        LEFT JOIN scan_targets st
+          ON st.user_id = pc.user_id AND st.notion_object_id = pc.source_page_id
+        WHERE pc.user_id = ?
+          AND pc.status IN ('대기', '보류', '승인', '반영 실패')
+        GROUP BY pc.source_page_id
+        ORDER BY approved_count DESC, pending_count DESC, latest_created_at DESC
+        LIMIT 8
+        """,
+        (user["id"],),
+    )
+    return ui.dashboard(user, connection, settings, targets, runs, improvements, notice)
 
 
 @router.get("/onboarding", response_class=HTMLResponse)
@@ -92,21 +118,21 @@ def notion_start(request: Request, next_path: str | None = Query(None, alias="ne
     user = db.default_user()
     notion = request.app.state.notion
     try:
-        url = notion.oauth_start_url(_make_state(user["id"], request.app.state.settings.encryption_key, next_path or "/account"))
+        url = notion.oauth_start_url(_make_state(user["id"], request.app.state.settings.encryption_key, next_path or "/settings"))
     except Exception as exc:
-        return _redirect(_safe_return(next_path, "/account"), f"Notion OAuth 시작 실패: {exc}")
+        return _redirect(_safe_return(next_path, "/settings"), f"Notion OAuth 시작 실패: {exc}")
     return RedirectResponse(url, status_code=303)
 
 
 @router.get("/auth/notion/callback")
 def notion_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None) -> RedirectResponse:
     if error:
-        return _redirect("/account", f"Notion OAuth 오류: {error}")
+        return _redirect("/settings", f"Notion OAuth 오류: {error}")
     if not code or not state:
-        return _redirect("/account", "Notion OAuth callback 값이 빠져 있습니다.")
+        return _redirect("/settings", "Notion OAuth callback 값이 빠져 있습니다.")
     state_data = _read_state(state, request.app.state.settings.encryption_key)
     if state_data is None:
-        return _redirect("/account", "Notion OAuth state를 확인하지 못했습니다.")
+        return _redirect("/settings", "Notion OAuth state를 확인하지 못했습니다.")
     user_id = state_data["user_id"]
     return_to = state_data["return_to"]
     try:
@@ -120,42 +146,7 @@ def notion_callback(request: Request, code: str | None = None, state: str | None
 
 @router.post("/settings/openrouter")
 def save_openrouter(request: Request, api_key: str = Form(...), return_to: str = Form("")) -> RedirectResponse:
-    db = request.app.state.db
-    user = db.default_user()
-    api_key = api_key.strip()
-    ok, error = request.app.state.openrouter.validate_key(api_key)
-    if not ok:
-        return _redirect(_safe_return(return_to, "/account"), f"OpenRouter 키 검증 실패: {error}")
-    db.update(
-        """
-        UPDATE connections
-        SET openrouter_api_key_encrypted = ?, openrouter_key_last4 = ?, updated_at = ?
-        WHERE user_id = ?
-        """,
-        (request.app.state.secret_box.encrypt(api_key), api_key[-4:], utc_now_iso(), user["id"]),
-    )
-    db.log("openrouter_key_saved", user_id=user["id"])
-    return _redirect(_safe_return(return_to, "/account"), "OpenRouter API 키를 저장했습니다.")
-
-
-@router.post("/settings/slack-webhook")
-def save_slack(request: Request, webhook_url: str = Form(...), return_to: str = Form("")) -> RedirectResponse:
-    db = request.app.state.db
-    user = db.default_user()
-    webhook_url = webhook_url.strip()
-    ok, error = request.app.state.slack.test_webhook(webhook_url)
-    if not ok:
-        return _redirect(_safe_return(return_to, "/notifications"), f"Slack webhook 테스트 실패: {error}")
-    db.update(
-        """
-        UPDATE connections
-        SET slack_webhook_url_encrypted = ?, slack_webhook_last4 = ?, updated_at = ?
-        WHERE user_id = ?
-        """,
-        (request.app.state.secret_box.encrypt(webhook_url), webhook_url[-4:], utc_now_iso(), user["id"]),
-    )
-    db.log("slack_webhook_saved", user_id=user["id"])
-    return _redirect(_safe_return(return_to, "/notifications"), "Slack webhook을 저장했습니다.")
+    return _redirect(_safe_return(return_to, "/settings"), "OpenRouter는 서버 환경변수 OPENROUTER_API_KEY를 사용합니다.")
 
 
 @router.post("/settings/email")
@@ -173,9 +164,9 @@ def send_email_verification(request: Request, email: str = Form(...), return_to:
             (email.strip(), utc_now_iso(), user["id"]),
         )
     except Exception as exc:
-        return _redirect(_safe_return(return_to, "/notifications"), f"이메일 인증 코드 발송 실패: {exc}")
+        return _redirect(_safe_return(return_to, "/settings"), f"이메일 인증 코드 발송 실패: {exc}")
     suffix = f" 개발 코드: {dev_code}" if dev_code else ""
-    return _redirect(_safe_return(return_to, "/notifications"), f"이메일 인증 코드를 보냈습니다.{suffix}")
+    return _redirect(_safe_return(return_to, "/settings"), f"이메일 인증 코드를 보냈습니다.{suffix}")
 
 
 @router.post("/settings/email/verify")
@@ -184,16 +175,34 @@ def verify_email(request: Request, code: str = Form(...), return_to: str = Form(
     user = db.default_user()
     ok, error = request.app.state.email_service.verify_code(user["id"], code)
     if not ok:
-        return _redirect(_safe_return(return_to, "/notifications"), error or "이메일 인증에 실패했습니다.")
+        return _redirect(_safe_return(return_to, "/settings"), error or "이메일 인증에 실패했습니다.")
     db.log("email_verified", user_id=user["id"])
-    return _redirect(_safe_return(return_to, "/notifications"), "이메일 알림을 연결했습니다.")
+    return _redirect(_safe_return(return_to, "/settings"), "이메일 알림을 연결했습니다.")
 
 
 @router.get("/targets", response_class=HTMLResponse)
 def targets(request: Request, notice: str | None = None) -> str:
-    db = request.app.state.db
-    user = db.default_user()
-    return ui.targets_page(db.active_targets(user["id"]), notice)
+    return settings_page(request, notice)
+
+
+@router.get("/api/notion/search")
+def search_notion_targets(
+    request: Request,
+    q: str = "",
+    object_type: str = "",
+    limit: int = Query(25, ge=1, le=50),
+) -> JSONResponse:
+    user = request.app.state.db.default_user()
+    try:
+        items = request.app.state.notion.search_selectable_objects(
+            user["id"],
+            query=q,
+            object_type=object_type or None,
+            limit=limit,
+        )
+    except Exception as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return JSONResponse({"items": items})
 
 
 @router.post("/targets")
@@ -209,6 +218,11 @@ def add_target(
 ) -> RedirectResponse:
     db = request.app.state.db
     user = db.default_user()
+    object_id = notion_object_id.strip()
+    object_type = notion_object_type.strip()
+    display_title = title.strip()
+    if object_type not in {"page", "database"} or not object_id or not display_title:
+        return _redirect(_safe_return(return_to, "/targets"), "Notion 검색 결과에서 점검 대상을 선택해 주세요.")
     excluded = [item.strip() for item in excluded_page_ids.split(",") if item.strip()]
     now = utc_now_iso()
     db.execute(
@@ -220,9 +234,9 @@ def add_target(
         """,
         (
             user["id"],
-            notion_object_id.strip(),
-            notion_object_type.strip(),
-            title.strip(),
+            object_id,
+            object_type,
+            display_title,
             url.strip() or None,
             1 if include_children else 0,
             json.dumps(excluded, ensure_ascii=False),
@@ -231,13 +245,13 @@ def add_target(
         ),
     )
     notice = "점검 대상을 추가했습니다."
-    if notion_object_type == "page":
+    if object_type == "page":
         try:
-            request.app.state.notion.ensure_inbox_database(user["id"], notion_object_id.strip())
+            request.app.state.notion.ensure_inbox_database(user["id"], object_id)
             notice = "점검 대상을 추가하고 Nocturne 수정함을 확인했습니다."
         except Exception as exc:
             db.log("inbox_ensure_after_target_failed", user_id=user["id"], level="warning", payload={"error": str(exc)})
-    return _redirect(_safe_return(return_to, "/targets"), notice)
+    return _redirect(_safe_return(return_to, "/settings"), notice)
 
 
 @router.post("/targets/{target_id}/delete")
@@ -248,20 +262,32 @@ def delete_target(request: Request, target_id: int) -> RedirectResponse:
         "UPDATE scan_targets SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
         (utc_now_iso(), target_id, user["id"]),
     )
-    return _redirect("/targets", "점검 대상을 삭제했습니다.")
+    return _redirect("/settings", "점검 대상을 삭제했습니다.")
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, notice: str | None = None) -> str:
+    db = request.app.state.db
+    user = db.default_user()
+    return ui.settings_page(
+        db.notification_settings_for_user(user["id"]),
+        db.connection_for_user(user["id"]),
+        db.active_targets(user["id"]),
+        notice,
+        request.app.state.settings.openrouter_configured,
+        request.app.state.settings.openrouter_default_model,
+    )
 
 
 @router.get("/notifications", response_class=HTMLResponse)
 def notifications(request: Request, notice: str | None = None) -> str:
-    db = request.app.state.db
-    user = db.default_user()
-    return ui.notifications_page(db.notification_settings_for_user(user["id"]), db.connection_for_user(user["id"]), notice)
+    return settings_page(request, notice)
 
 
 @router.post("/notifications")
 def update_notifications(
     request: Request,
-    default_channel: str = Form(...),
+    default_channel: str = Form("email"),
     scan_time: str = Form(...),
     notify_time: str = Form(...),
     timezone: str = Form(...),
@@ -276,10 +302,10 @@ def update_notifications(
         SET default_channel = ?, scan_time = ?, notify_time = ?, timezone = ?, notify_zero = ?, updated_at = ?
         WHERE user_id = ?
         """,
-        (default_channel, scan_time, notify_time, timezone, 1 if notify_zero else 0, utc_now_iso(), user["id"]),
+        ("email", scan_time, notify_time, timezone, 1 if notify_zero else 0, utc_now_iso(), user["id"]),
     )
     db.update("UPDATE users SET timezone = ? WHERE id = ?", (timezone, user["id"]))
-    return _redirect(_safe_return(return_to, "/notifications"), "알림 설정을 저장했습니다.")
+    return _redirect(_safe_return(return_to, "/settings"), "알림 설정을 저장했습니다.")
 
 
 @router.get("/runs", response_class=HTMLResponse)
@@ -288,28 +314,31 @@ def runs(request: Request, notice: str | None = None) -> str:
     user = db.default_user()
     run_rows = db.rows("SELECT * FROM runs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (user["id"],))
     logs = db.rows("SELECT * FROM audit_logs WHERE user_id IS NULL OR user_id = ? ORDER BY created_at DESC LIMIT 80", (user["id"],))
-    return ui.runs_page(run_rows, logs, notice)
+    settings = db.notification_settings_for_user(user["id"])
+    return ui.runs_page(run_rows, logs, notice, settings["timezone"])
 
 
 @router.post("/runs/manual")
-def manual_run(request: Request, background_tasks: BackgroundTasks) -> RedirectResponse:
+def manual_run(request: Request, background_tasks: BackgroundTasks, return_to: str = Form("")) -> RedirectResponse:
     user = request.app.state.db.default_user()
     background_tasks.add_task(request.app.state.harness.run_for_user, user["id"], manual=True)
-    return _redirect("/runs", "수동 점검을 시작했습니다.")
+    return _redirect(_safe_return(return_to, "/runs"), "수동 점검을 시작했습니다.")
 
 
 @router.post("/apply-approved")
-def apply_approved(request: Request) -> RedirectResponse:
+def apply_approved(request: Request, return_to: str = Form("")) -> RedirectResponse:
     user = request.app.state.db.default_user()
-    applied, failed = request.app.state.harness.apply_approved_for_user(user["id"])
-    return _redirect("/runs", f"승인 항목 반영 완료: 성공 {applied}건, 실패 {failed}건")
+    target = _safe_return(return_to, "/dashboard")
+    try:
+        applied, failed = request.app.state.harness.apply_approved_for_user(user["id"])
+    except Exception as exc:
+        return _redirect(target, f"승인 항목 반영 실패: {exc}")
+    return _redirect(target, f"승인 항목 반영 완료: 성공 {applied}건, 실패 {failed}건")
 
 
 @router.get("/account", response_class=HTMLResponse)
 def account(request: Request, notice: str | None = None) -> str:
-    db = request.app.state.db
-    user = db.default_user()
-    return ui.account_page(db.connection_for_user(user["id"]), notice)
+    return settings_page(request, notice)
 
 
 @router.post("/account/disconnect/notion")
@@ -332,7 +361,7 @@ def disconnect_notion(request: Request) -> RedirectResponse:
         (utc_now_iso(), user["id"]),
     )
     db.log("notion_disconnected", user_id=user["id"])
-    return _redirect("/account", "Notion 연결을 해제했습니다.")
+    return _redirect("/settings", "Notion 연결을 해제했습니다.")
 
 
 @router.post("/account/delete-local-data")
@@ -389,9 +418,8 @@ def _read_state(state: str, secret: str) -> dict[str, int | str] | None:
 
 def _onboarding_complete(connection: object, targets: list[object]) -> bool:
     notion = bool(connection["notion_access_token_encrypted"])
-    openrouter = bool(connection["openrouter_api_key_encrypted"])
-    channel = bool(connection["slack_webhook_url_encrypted"]) or bool(connection["notification_email_verified"])
-    return notion and openrouter and channel and bool(targets)
+    channel = bool(connection["notification_email_verified"])
+    return notion and channel and bool(targets)
 
 
 def _progress_done(db: object, user_id: int, progress_key: str) -> bool:
@@ -404,14 +432,11 @@ def _progress_done(db: object, user_id: int, progress_key: str) -> bool:
 
 def _allowed_onboarding_step(connection: object, targets: list[object], review_acknowledged: bool) -> int:
     notion = bool(connection["notion_access_token_encrypted"])
-    openrouter = bool(connection["openrouter_api_key_encrypted"])
-    channel = bool(connection["slack_webhook_url_encrypted"]) or bool(connection["notification_email_verified"])
+    channel = bool(connection["notification_email_verified"])
     if not notion:
         return 0
     if not review_acknowledged:
         return 1
-    if not openrouter:
-        return 2
     if not targets:
         return 3
     if not channel:

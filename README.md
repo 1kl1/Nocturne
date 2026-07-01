@@ -4,13 +4,14 @@ Nocturne MVP is a single-container FastAPI application that audits selected Noti
 
 ## What Is Implemented
 
-- FastAPI web application with onboarding, target selection, notification settings, run logs, and account/API key management.
+- FastAPI web application with onboarding, home dashboard, run logs, and settings for page targets, email, and account connections.
 - SQLite persistence for users, connections, scan targets, runs, proposal cache, Nocturne edit history, email verification, and audit logs.
-- Encrypted storage for Notion tokens, OpenRouter keys, and Slack webhook URLs.
+- Encrypted storage for Notion tokens and email verification state.
 - Notion OAuth, page/database expansion, child-page traversal, block text extraction, proposal inbox creation, proposal page writes, and approved-item application.
-- OpenRouter adapter using the service default model from `OPENROUTER_DEFAULT_MODEL`.
+- OpenRouter adapter using the server-provided `OPENROUTER_API_KEY` and service default model from `OPENROUTER_DEFAULT_MODEL`.
 - Web search adapter with `tavily`, `brave`, `serper`, or `none`.
-- Slack webhook notifications and email notifications through `console`, `sendgrid`, `postmark`, or `smtp`.
+- Email notifications through SMTP. `console` remains useful for local development.
+- Agent tool/action logging via `agent_tool_call` audit events.
 - Internal scheduler loop for nightly runs in the user's timezone.
 - Dockerfile and Coolify-friendly volume/env setup.
 
@@ -44,14 +45,25 @@ NOTION_CLIENT_ID=
 NOTION_CLIENT_SECRET=
 NOTION_REDIRECT_URI=
 OPENROUTER_DEFAULT_MODEL=
+OPENROUTER_API_KEY=
 EMAIL_PROVIDER=
 EMAIL_FROM=
-EMAIL_API_KEY=
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USERNAME=
+SMTP_PASSWORD=
 WEB_SEARCH_PROVIDER=
 WEB_SEARCH_API_KEY=
 ```
 
-User-provided OpenRouter keys and Slack webhook URLs are entered in the web app and encrypted before storage.
+OpenRouter is no longer configured by each user. Set `OPENROUTER_API_KEY` as a server environment variable, and keep it out of logs and screenshots.
+
+SMTP is handled by the app through Python's `smtplib`, but the project cannot send real email by itself without a reachable SMTP service. If SMTP fails in deployment, check these first:
+
+- The host allows outbound SMTP to your provider and port, usually `587` with STARTTLS.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `EMAIL_FROM` match your provider's settings.
+- The provider permits the `EMAIL_FROM` sender. Some providers require domain verification, app passwords, or SPF/DKIM records.
+- For local development, use `EMAIL_PROVIDER=console` to log verification codes instead of sending email.
 
 ## Docker
 

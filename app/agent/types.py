@@ -82,15 +82,12 @@ class ApplyResult:
 
 @dataclass
 class NotificationResult:
-    slack_sent: bool = False
     email_sent: bool = False
     errors: list[str] = field(default_factory=list)
 
     @property
     def status_text(self) -> str:
         delivered = []
-        if self.slack_sent:
-            delivered.append("slack")
         if self.email_sent:
             delivered.append("email")
         if self.errors and delivered:

@@ -32,10 +32,6 @@ SCHEMA: tuple[str, ...] = (
         notion_owner_info TEXT,
         notion_inbox_database_id TEXT,
         notion_inbox_url TEXT,
-        openrouter_api_key_encrypted TEXT,
-        openrouter_key_last4 TEXT,
-        slack_webhook_url_encrypted TEXT,
-        slack_webhook_last4 TEXT,
         notification_email TEXT,
         notification_email_verified INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
@@ -47,7 +43,7 @@ SCHEMA: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS notification_settings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL UNIQUE,
-        default_channel TEXT NOT NULL DEFAULT 'both',
+        default_channel TEXT NOT NULL DEFAULT 'email',
         notify_time TEXT NOT NULL DEFAULT '08:00',
         scan_time TEXT NOT NULL DEFAULT '02:00',
         timezone TEXT NOT NULL DEFAULT 'Asia/Seoul',
@@ -213,7 +209,7 @@ class Database:
             """
             INSERT OR IGNORE INTO notification_settings
                 (user_id, default_channel, notify_time, scan_time, timezone, notify_zero, created_at, updated_at)
-            VALUES (?, 'both', '08:00', '02:00', 'Asia/Seoul', 1, ?, ?)
+            VALUES (?, 'email', '08:00', '02:00', 'Asia/Seoul', 1, ?, ?)
             """,
             (user_id, now, now),
         )

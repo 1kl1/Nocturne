@@ -5,11 +5,9 @@ import smtplib
 import string
 from email.message import EmailMessage
 from hashlib import sha256
-from typing import Any
 
 from app.config import Settings
 from app.db import Database
-from app.services.http_client import ExternalAPIError, request_json
 from app.time_utils import parse_iso, utc_now, utc_now_iso
 
 
@@ -78,49 +76,16 @@ class EmailService:
         if provider == "console":
             self.db.log("email_console", payload={"to": to_email, "subject": subject, "body": body})
             return
-        if provider == "sendgrid":
-            self._sendgrid(to_email, subject, body)
-            return
-        if provider == "postmark":
-            self._postmark(to_email, subject, body)
-            return
         if provider == "smtp":
             self._smtp(to_email, subject, body)
             return
         raise EmailError(f"지원하지 않는 이메일 provider입니다: {provider}")
 
-    def _sendgrid(self, to_email: str, subject: str, body: str) -> None:
-        payload: dict[str, Any] = {
-            "personalizations": [{"to": [{"email": to_email}]}],
-            "from": {"email": self.settings.email_from},
-            "subject": subject,
-            "content": [{"type": "text/plain", "value": body}],
-        }
-        try:
-            request_json(
-                "POST",
-                "https://api.sendgrid.com/v3/mail/send",
-                headers={"Authorization": f"Bearer {self.settings.email_api_key}"},
-                payload=payload,
-                retries=1,
-            )
-        except ExternalAPIError as exc:
-            raise EmailError(exc.body or str(exc)) from exc
-
-    def _postmark(self, to_email: str, subject: str, body: str) -> None:
-        payload = {"From": self.settings.email_from, "To": to_email, "Subject": subject, "TextBody": body}
-        try:
-            request_json(
-                "POST",
-                "https://api.postmarkapp.com/email",
-                headers={"X-Postmark-Server-Token": self.settings.email_api_key},
-                payload=payload,
-                retries=1,
-            )
-        except ExternalAPIError as exc:
-            raise EmailError(exc.body or str(exc)) from exc
-
     def _smtp(self, to_email: str, subject: str, body: str) -> None:
+        if not self.settings.smtp_host:
+            raise EmailError("SMTP_HOST가 설정되어 있지 않습니다.")
+        if not self.settings.email_from:
+            raise EmailError("EMAIL_FROM이 설정되어 있지 않습니다.")
         message = EmailMessage()
         message["From"] = self.settings.email_from
         message["To"] = to_email

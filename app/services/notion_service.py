@@ -179,6 +179,35 @@ class NotionService:
             if not cursor:
                 return pages
 
+    def search_selectable_objects(
+        self,
+        user_id: int,
+        *,
+        query: str = "",
+        object_type: str | None = None,
+        limit: int = 25,
+    ) -> list[dict[str, str]]:
+        page_size = max(1, min(limit, 50))
+        requested_type = object_type if object_type in {"page", "database"} else None
+        payload: dict[str, Any] = {
+            "page_size": page_size,
+            "sort": {"direction": "descending", "timestamp": "last_edited_time"},
+        }
+        if query.strip():
+            payload["query"] = query.strip()
+        if requested_type:
+            payload["filter"] = {"value": requested_type, "property": "object"}
+        data = self._request(user_id, "POST", "/search", payload)
+        results: list[dict[str, str]] = []
+        for item in data.get("results", []):
+            result = self._selectable_object(item)
+            if not result:
+                continue
+            if requested_type and result["object_type"] != requested_type:
+                continue
+            results.append(result)
+        return results
+
     def expand_targets(self, user_id: int) -> list[PageCandidate]:
         targets = self.db.active_targets(user_id)
         pages: dict[str, PageCandidate] = {}
@@ -267,6 +296,23 @@ class NotionService:
             last_edited_time=page.get("last_edited_time"),
             source_target_id=source_target_id,
         )
+
+    def _selectable_object(self, item: dict[str, Any]) -> dict[str, str] | None:
+        object_type = item.get("object")
+        object_id = str(item.get("id") or "")
+        if not object_id or object_type not in {"page", "database"}:
+            return None
+        if object_type == "page":
+            title = self._title_from_page(item)
+        else:
+            title = _database_title(item)
+        return {
+            "object_id": object_id,
+            "object_type": object_type,
+            "title": title,
+            "url": str(item.get("url") or ""),
+            "last_edited_time": str(item.get("last_edited_time") or ""),
+        }
 
     def fetch_text_blocks(self, user_id: int, page: PageCandidate) -> list[TextBlock]:
         blocks: list[TextBlock] = []
@@ -579,3 +625,8 @@ def _page_title_property(properties: dict[str, Any]) -> str:
             if title:
                 return title
     return "Untitled"
+
+
+def _database_title(database: dict[str, Any]) -> str:
+    title = "".join(item.get("plain_text", "") for item in database.get("title", []))
+    return title or "Untitled database"

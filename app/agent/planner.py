@@ -19,5 +19,5 @@ class Planner:
             PlanStep("analyze", "웹 검색 결과와 OpenRouter 모델을 사용해 오류/누락/모순 후보 생성"),
             PlanStep("validate", "원문 위치, 중복, 확신도, 최소 수정 원칙 검증"),
             PlanStep("write_proposals", "검증된 제안을 Nocturne 수정함에 저장"),
-            PlanStep("notify", "Slack/이메일로 0건까지 포함해 결과 알림 발송"),
+            PlanStep("notify", "이메일로 0건까지 포함해 결과 알림 발송"),
         ]

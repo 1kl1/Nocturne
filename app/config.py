@@ -20,13 +20,13 @@ class Settings:
     notion_client_id: str
     notion_client_secret: str
     notion_redirect_uri: str
+    openrouter_api_key: str
     openrouter_default_model: str
     openrouter_app_name: str
     openrouter_app_url: str
     skip_external_validation: bool
     email_provider: str
     email_from: str
-    email_api_key: str
     smtp_host: str
     smtp_port: int
     smtp_username: str
@@ -50,6 +50,10 @@ class Settings:
     def notion_oauth_configured(self) -> bool:
         return bool(self.notion_client_id and self.notion_client_secret and self.notion_redirect_uri)
 
+    @property
+    def openrouter_configured(self) -> bool:
+        return bool(self.openrouter_api_key)
+
 
 def get_settings() -> Settings:
     return Settings(
@@ -59,13 +63,13 @@ def get_settings() -> Settings:
         notion_client_id=os.getenv("NOTION_CLIENT_ID", ""),
         notion_client_secret=os.getenv("NOTION_CLIENT_SECRET", ""),
         notion_redirect_uri=os.getenv("NOTION_REDIRECT_URI", "http://localhost:8000/auth/notion/callback"),
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_default_model=os.getenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini"),
         openrouter_app_name=os.getenv("OPENROUTER_APP_NAME", "Nocturne"),
         openrouter_app_url=os.getenv("OPENROUTER_APP_URL", os.getenv("APP_URL", "http://localhost:8000")),
         skip_external_validation=_bool_env("NOCTURNE_SKIP_EXTERNAL_VALIDATION", False),
-        email_provider=os.getenv("EMAIL_PROVIDER", "console").lower(),
+        email_provider=os.getenv("EMAIL_PROVIDER", "smtp").lower(),
         email_from=os.getenv("EMAIL_FROM", "nocturne@example.com"),
-        email_api_key=os.getenv("EMAIL_API_KEY", ""),
         smtp_host=os.getenv("SMTP_HOST", ""),
         smtp_port=int(os.getenv("SMTP_PORT", "587")),
         smtp_username=os.getenv("SMTP_USERNAME", ""),

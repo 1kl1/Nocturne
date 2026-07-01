@@ -5,7 +5,6 @@ from app.config import Settings
 from app.db import Database
 from app.security import SecretBox
 from app.services.email_service import EmailService
-from app.services.slack_service import SlackService
 
 
 class NotificationService:
@@ -14,13 +13,11 @@ class NotificationService:
         settings: Settings,
         db: Database,
         secret_box: SecretBox,
-        slack: SlackService,
         email: EmailService,
     ):
         self.settings = settings
         self.db = db
         self.secret_box = secret_box
-        self.slack = slack
         self.email = email
 
     def send_run_summary(self, user_id: int, run: dict[str, object], inbox_url: str | None) -> NotificationResult:
@@ -31,23 +28,15 @@ class NotificationService:
 
         text = self._message(run, inbox_url)
         result = NotificationResult()
-        channel = prefs["default_channel"]
 
-        if channel in {"both", "slack"} and connection["slack_webhook_url_encrypted"]:
-            try:
-                webhook = self.secret_box.decrypt(connection["slack_webhook_url_encrypted"])
-                assert webhook is not None
-                self.slack.send(webhook, text)
-                result.slack_sent = True
-            except Exception as exc:
-                result.errors.append(f"slack:{exc}")
-
-        if channel in {"both", "email"} and connection["notification_email_verified"] and connection["notification_email"]:
+        if connection["notification_email_verified"] and connection["notification_email"]:
             try:
                 self.email.send(connection["notification_email"], "Nocturne 점검 결과", text)
                 result.email_sent = True
             except Exception as exc:
                 result.errors.append(f"email:{exc}")
+        else:
+            result.errors.append("email:not_configured")
 
         return result
 

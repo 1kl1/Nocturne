@@ -9,7 +9,7 @@ from app.agent.validator import ProposalValidator
 from app.config import Settings
 from app.db import Database
 from app.security import SecretBox, stable_hash
-from app.services.notion_service import replace_rich_text_sentence
+from app.services.notion_service import NotionService, replace_rich_text_sentence
 from app.time_utils import utc_now_iso
 
 
@@ -21,13 +21,13 @@ def settings_for(path: Path) -> Settings:
         notion_client_id="",
         notion_client_secret="",
         notion_redirect_uri="",
+        openrouter_api_key="test-openrouter-key",
         openrouter_default_model="openai/gpt-4.1-mini",
         openrouter_app_name="Nocturne",
         openrouter_app_url="http://localhost:8000",
         skip_external_validation=True,
         email_provider="console",
         email_from="nocturne@example.com",
-        email_api_key="",
         smtp_host="",
         smtp_port=587,
         smtp_username="",
@@ -127,6 +127,54 @@ class CoreTest(unittest.TestCase):
         plain = "".join(part["text"]["content"] for part in updated)
         self.assertEqual(plain, "Alpha new sentence Omega")
         self.assertEqual(updated[1]["annotations"]["bold"], True)
+
+    def test_notion_search_selectable_objects_formats_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(settings_for(Path(tmp) / "nocturne.sqlite3"))
+            db.initialize()
+            user = db.default_user()
+            service = NotionService(settings_for(Path(tmp) / "nocturne.sqlite3"), db, SecretBox("unit-test-secret"))
+            calls = []
+
+            def fake_request(user_id: int, method: str, path: str, payload: object = None, retries: int = 2) -> dict:
+                calls.append({"user_id": user_id, "method": method, "path": path, "payload": payload})
+                return {
+                    "results": [
+                        {
+                            "object": "page",
+                            "id": "page-1",
+                            "url": "https://notion.so/page-1",
+                            "last_edited_time": "2026-07-01T00:00:00.000Z",
+                            "properties": {
+                                "Name": {
+                                    "type": "title",
+                                    "title": [{"plain_text": "Roadmap"}],
+                                }
+                            },
+                        },
+                        {
+                            "object": "database",
+                            "id": "db-1",
+                            "url": "https://notion.so/db-1",
+                            "last_edited_time": "2026-06-30T00:00:00.000Z",
+                            "title": [{"plain_text": "Knowledge Base"}],
+                        },
+                        {"object": "block", "id": "block-1"},
+                    ]
+                }
+
+            service._request = fake_request  # type: ignore[method-assign]
+            all_results = service.search_selectable_objects(user["id"], query="Roadmap", limit=10)
+            page_results = service.search_selectable_objects(user["id"], object_type="page", limit=80)
+
+            self.assertEqual(calls[0]["path"], "/search")
+            self.assertEqual(calls[0]["payload"]["query"], "Roadmap")
+            self.assertNotIn("filter", calls[0]["payload"])
+            self.assertEqual(all_results[0]["title"], "Roadmap")
+            self.assertEqual(all_results[1]["title"], "Knowledge Base")
+            self.assertEqual(calls[1]["payload"]["page_size"], 50)
+            self.assertEqual(calls[1]["payload"]["filter"], {"value": "page", "property": "object"})
+            self.assertEqual([result["object_type"] for result in page_results], ["page"])
 
 
 if __name__ == "__main__":

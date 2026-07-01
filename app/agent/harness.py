@@ -69,43 +69,92 @@ class AgentHarness:
         try:
             connection = self.db.connection_for_user(user_id)
             notion_token = self.secret_box.decrypt(connection["notion_access_token_encrypted"])
-            openrouter_key = self.secret_box.decrypt(connection["openrouter_api_key_encrypted"])
-            has_channel = bool(connection["slack_webhook_url_encrypted"]) or bool(connection["notification_email_verified"])
+            openrouter_key = self.settings.openrouter_api_key
+            has_channel = bool(connection["notification_email_verified"] and connection["notification_email"])
             if not notion_token:
                 raise RuntimeError("먼저 Notion을 연결해야 합니다.")
             if not openrouter_key:
-                raise RuntimeError("OpenRouter API 키를 먼저 등록해야 합니다.")
+                raise RuntimeError("서버 OPENROUTER_API_KEY가 설정되어 있지 않습니다.")
             if not has_channel:
-                raise RuntimeError("Slack 또는 이메일 알림 채널이 하나 이상 필요합니다.")
+                raise RuntimeError("이메일 알림 채널을 먼저 연결해야 합니다.")
             if not self.db.active_targets(user_id):
                 raise RuntimeError("점검 대상을 먼저 추가해야 합니다.")
 
+            self._log_tool_call(user_id, run_id, "approval.apply_approved", "start")
             apply_result = self.applier.apply_approved(user_id, run_id)
+            self._log_tool_call(
+                user_id,
+                run_id,
+                "approval.apply_approved",
+                "success",
+                {"applied": apply_result.applied, "failed": apply_result.failed},
+            )
             counts["applied_count"] = apply_result.applied
             counts["apply_failed_count"] = apply_result.failed
 
+            self._log_tool_call(user_id, run_id, "notion.expand_targets", "start")
             pages = self.notion.expand_targets(user_id)
             if not pages:
                 raise RuntimeError("점검할 페이지를 찾지 못했습니다.")
+            self._log_tool_call(user_id, run_id, "notion.expand_targets", "success", {"pages": len(pages)})
             counts["scanned_page_count"] = len(pages)
+            self._log_tool_call(user_id, run_id, "agent.filter_recent", "start", {"last_success": last_success})
             changed_pages = [page for page in pages if self._is_changed_since_last_success(user_id, page.page_id, page.last_edited_time, last_success)]
+            self._log_tool_call(user_id, run_id, "agent.filter_recent", "success", {"changed_pages": len(changed_pages)})
             counts["changed_page_count"] = len(changed_pages)
             page_lookup = {page.page_id: page for page in pages}
 
+            self._log_tool_call(user_id, run_id, "notion.ensure_inbox_database", "start")
             inbox_id, inbox_url = self.notion.ensure_inbox_database(user_id, changed_pages[0].page_id if changed_pages else pages[0].page_id)
             if not inbox_id:
                 raise RuntimeError("Nocturne 수정함 데이터베이스를 만들지 못했습니다.")
+            self._log_tool_call(user_id, run_id, "notion.ensure_inbox_database", "success", {"database_id": inbox_id})
 
             for page in changed_pages:
                 try:
+                    self._log_tool_call(user_id, run_id, "notion.fetch_text_blocks", "start", {"page_id": page.page_id, "title": page.title})
                     blocks = self.notion.fetch_text_blocks(user_id, page)
+                    self._log_tool_call(user_id, run_id, "notion.fetch_text_blocks", "success", {"page_id": page.page_id, "blocks": len(blocks)})
                     if not blocks:
                         continue
+                    self._log_tool_call(user_id, run_id, "web_search.candidate_queries", "start", {"page_id": page.page_id})
                     queries = self.web_search.candidate_queries(blocks)
+                    self._log_tool_call(user_id, run_id, "web_search.candidate_queries", "success", {"page_id": page.page_id, "queries": len(queries)})
+                    self._log_tool_call(user_id, run_id, "web_search.search_many", "start", {"page_id": page.page_id, "queries": len(queries)})
                     search_results = self.web_search.search_many(queries)
+                    self._log_tool_call(
+                        user_id,
+                        run_id,
+                        "web_search.search_many",
+                        "success",
+                        {"page_id": page.page_id, "result_groups": len(search_results)},
+                    )
+                    self._log_tool_call(user_id, run_id, "openrouter.analyze_blocks", "start", {"page_id": page.page_id, "blocks": len(blocks)})
                     proposals = self.openrouter.analyze_blocks(openrouter_key, blocks, search_results)
+                    self._log_tool_call(user_id, run_id, "openrouter.analyze_blocks", "success", {"page_id": page.page_id, "proposals": len(proposals)})
+                    self._log_tool_call(user_id, run_id, "validator.validate", "start", {"page_id": page.page_id, "proposals": len(proposals)})
                     validation = self.validator.validate(user_id, blocks, proposals)
+                    self._log_tool_call(
+                        user_id,
+                        run_id,
+                        "validator.validate",
+                        "success",
+                        {
+                            "page_id": page.page_id,
+                            "accepted": len(validation.accepted),
+                            "held": len(validation.held),
+                            "rejected": len(validation.rejected),
+                        },
+                    )
+                    self._log_tool_call(
+                        user_id,
+                        run_id,
+                        "proposal_writer.write",
+                        "start",
+                        {"page_id": page.page_id, "proposals": len(validation.accepted) + len(validation.held)},
+                    )
                     written = self.writer.write(user_id, inbox_id, run_id, page_lookup, validation.accepted + validation.held)
+                    self._log_tool_call(user_id, run_id, "proposal_writer.write", "success", {"page_id": page.page_id, "written": written.written, "failed": written.failed})
                     counts["proposal_count"] = int(counts["proposal_count"] or 0) + len(validation.accepted)
                     counts["held_count"] = int(counts["held_count"] or 0) + len(validation.held)
                     counts["error_count"] = int(counts["error_count"] or 0) + sum(1 for item in validation.accepted if item.issue_type == "error")
@@ -125,6 +174,14 @@ class AgentHarness:
                         page_errors.append(f"{page.title}: 제안 저장 실패 {written.failed}건")
                 except Exception as exc:
                     page_errors.append(f"{page.title}: {exc}")
+                    self._log_tool_call(
+                        user_id,
+                        run_id,
+                        "page.scan",
+                        "error",
+                        {"page_id": page.page_id, "title": page.title, "error": str(exc)},
+                        level="warning",
+                    )
                     self.db.log(
                         "page_scan_failed",
                         user_id=user_id,
@@ -134,7 +191,16 @@ class AgentHarness:
                     )
 
             notification_payload = {"run_id": run_id, **counts}
+            self._log_tool_call(user_id, run_id, "notification.send_run_summary", "start")
             notification_result = self.notifications.send_run_summary(user_id, notification_payload, inbox_url)
+            self._log_tool_call(
+                user_id,
+                run_id,
+                "notification.send_run_summary",
+                "success" if not notification_result.errors else "error",
+                {"status": notification_result.status_text, "errors": notification_result.errors[:5]},
+                level="warning" if notification_result.errors else "info",
+            )
             notification_errors.extend(notification_result.errors)
             counts["notification_status"] = notification_result.status_text
 
@@ -154,7 +220,9 @@ class AgentHarness:
             return run_id
 
     def apply_approved_for_user(self, user_id: int) -> tuple[int, int]:
+        self._log_tool_call(user_id, None, "approval.apply_approved_manual", "start")
         result = self.applier.apply_approved(user_id)
+        self._log_tool_call(user_id, None, "approval.apply_approved_manual", "success", {"applied": result.applied, "failed": result.failed})
         return result.applied, result.failed
 
     def _is_changed_since_last_success(
@@ -194,3 +262,18 @@ class AgentHarness:
             """,
             (utc_now_iso(), status, utc_now_iso(), user_id),
         )
+
+    def _log_tool_call(
+        self,
+        user_id: int,
+        run_id: str | None,
+        action: str,
+        status: str,
+        payload: dict[str, object] | None = None,
+        *,
+        level: str = "info",
+    ) -> None:
+        body = {"action": action, "status": status}
+        if payload:
+            body.update(payload)
+        self.db.log("agent_tool_call", user_id=user_id, run_id=run_id, level=level, payload=body)

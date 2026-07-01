@@ -13,7 +13,6 @@ from app.services.email_service import EmailService
 from app.services.notification_service import NotificationService
 from app.services.notion_service import NotionService
 from app.services.openrouter_service import OpenRouterService
-from app.services.slack_service import SlackService
 from app.services.web_search_service import WebSearchService
 
 
@@ -28,18 +27,16 @@ async def startup() -> None:
     db = Database(settings)
     db.initialize()
     secret_box = SecretBox(settings.encryption_key)
-    slack = SlackService()
     email = EmailService(settings, db)
     notion = NotionService(settings, db, secret_box)
     openrouter = OpenRouterService(settings)
     web_search = WebSearchService(settings)
-    notifications = NotificationService(settings, db, secret_box, slack, email)
+    notifications = NotificationService(settings, db, secret_box, email)
     harness = AgentHarness(settings, db, secret_box, notion, openrouter, web_search, notifications)
 
     app.state.settings = settings
     app.state.db = db
     app.state.secret_box = secret_box
-    app.state.slack = slack
     app.state.email_service = email
     app.state.notion = notion
     app.state.openrouter = openrouter
