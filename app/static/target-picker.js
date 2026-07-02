@@ -38,6 +38,14 @@
     status.dataset.tone = tone || "";
   }
 
+  function redirectIfUnauthorized(response) {
+    if (response.status !== 401) {
+      return false;
+    }
+    window.location.assign("/");
+    return true;
+  }
+
   function stateFor(picker) {
     if (!picker._targetState) {
       picker._targetState = {
@@ -324,6 +332,9 @@
 
   async function fetchItems(url) {
     const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (redirectIfUnauthorized(response)) {
+      return [];
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(data.detail || "Notion 목록을 불러오지 못했습니다.");

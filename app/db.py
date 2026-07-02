@@ -280,6 +280,74 @@ class Database:
         with self.connection() as conn:
             return conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
 
+    def user_by_id(self, user_id: int) -> sqlite3.Row | None:
+        return self.row("SELECT * FROM users WHERE id = ?", (user_id,))
+
+    def user_for_notion_oauth(self, oauth_data: dict[str, Any]) -> sqlite3.Row:
+        workspace_id = str(oauth_data.get("workspace_id") or "").strip()
+        bot_id = str(oauth_data.get("bot_id") or "").strip()
+        now = utc_now_iso()
+        with self.connection() as conn:
+            if workspace_id:
+                row = conn.execute(
+                    """
+                    SELECT u.* FROM users u
+                    JOIN connections c ON c.user_id = u.id
+                    WHERE c.notion_workspace_id = ?
+                    ORDER BY u.id LIMIT 1
+                    """,
+                    (workspace_id,),
+                ).fetchone()
+                if row:
+                    return row
+            if bot_id:
+                row = conn.execute(
+                    """
+                    SELECT u.* FROM users u
+                    JOIN connections c ON c.user_id = u.id
+                    WHERE c.notion_bot_id = ?
+                    ORDER BY u.id LIMIT 1
+                    """,
+                    (bot_id,),
+                ).fetchone()
+                if row:
+                    return row
+
+            cursor = conn.execute(
+                "INSERT INTO users (email, created_at, timezone) VALUES (?, ?, ?)",
+                (self._notion_owner_email(oauth_data.get("owner")) or self.settings.default_user_email, now, "Asia/Seoul"),
+            )
+            user_id = int(cursor.lastrowid)
+            owner = oauth_data.get("owner")
+            conn.execute(
+                """
+                INSERT INTO connections
+                    (user_id, notion_workspace_id, notion_workspace_name, notion_bot_id, notion_owner_info, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    workspace_id or None,
+                    str(oauth_data.get("workspace_name") or "").strip() or None,
+                    bot_id or None,
+                    json.dumps(owner, ensure_ascii=False, default=str) if owner is not None else None,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO notification_settings
+                    (user_id, default_channel, notify_time, scan_time, timezone, notify_zero, created_at, updated_at)
+                VALUES (?, 'email', '08:00', '02:00', 'Asia/Seoul', 1, ?, ?)
+                """,
+                (user_id, now, now),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            assert row is not None
+            return row
+
     def row(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
         with self.connection() as conn:
             return conn.execute(query, tuple(params)).fetchone()
@@ -392,3 +460,17 @@ class Database:
         if not isinstance(decoded, list):
             return []
         return [str(item) for item in decoded]
+
+    @staticmethod
+    def _notion_owner_email(owner: Any) -> str | None:
+        if not isinstance(owner, dict):
+            return None
+        user = owner.get("user")
+        if not isinstance(user, dict):
+            return None
+        person = user.get("person")
+        if isinstance(person, dict) and person.get("email"):
+            return str(person["email"])
+        if user.get("email"):
+            return str(user["email"])
+        return None

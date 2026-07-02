@@ -67,6 +67,7 @@
       const url = new URL("/api/runs", window.location.origin);
       url.searchParams.set("limit", String(currentLimit));
       const response = await fetch(url, { headers: { Accept: "application/json" } });
+      if (redirectIfUnauthorized(response)) return;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || "실행 로그를 새로고침하지 못했습니다.");
       if (data.limit) {
@@ -165,6 +166,7 @@
     openErrorDialog("오류 불러오는 중", [["Run", runId], ["상태", "관련 오류를 확인하고 있습니다."]]);
     try {
       const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/errors`, { headers: { Accept: "application/json" } });
+      if (redirectIfUnauthorized(response)) return;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || "오류 상세를 불러오지 못했습니다.");
       const rows = [["Run", data.runId || runId], ["상태", data.status || "-"]];
@@ -214,6 +216,12 @@
     } else {
       errorDialog.removeAttribute("open");
     }
+  }
+
+  function redirectIfUnauthorized(response) {
+    if (response.status !== 401) return false;
+    window.location.assign("/");
+    return true;
   }
 
   if (document.readyState === "loading") {

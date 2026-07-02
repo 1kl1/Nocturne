@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,10 +14,12 @@ from app.agent.types import ProposalCandidate, TextBlock
 from app.agent.validator import ProposalValidator
 from app.config import Settings
 from app.db import Database
+from app.routes import web
+from app.scheduler.scheduler import SchedulerLoop
 from app.security import SecretBox, stable_hash
 from app.services.notion_service import NotionService, replace_rich_text_sentence
 from app.services.openrouter_service import OpenRouterService
-from app.time_utils import utc_now_iso
+from app.time_utils import local_hhmm, utc_now_iso
 
 
 def settings_for(path: Path) -> Settings:
@@ -131,6 +134,88 @@ class CoreTest(unittest.TestCase):
             self.assertIn("knowledge_graph_syncs", tables)
             self.assertIn("suggested_sentence", proposal_columns)
             self.assertIn("source_urls", proposal_columns)
+
+    def test_database_uses_notion_workspace_as_user_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(settings_for(Path(tmp) / "nocturne.sqlite3"))
+            db.initialize()
+
+            first = db.user_for_notion_oauth(
+                {
+                    "workspace_id": "workspace-a",
+                    "workspace_name": "Workspace A",
+                    "bot_id": "bot-a",
+                    "owner": {"user": {"person": {"email": "a@example.com"}}},
+                }
+            )
+            same_workspace = db.user_for_notion_oauth(
+                {
+                    "workspace_id": "workspace-a",
+                    "workspace_name": "Workspace A",
+                    "bot_id": "bot-a-reinstalled",
+                }
+            )
+            second = db.user_for_notion_oauth(
+                {
+                    "workspace_id": "workspace-b",
+                    "workspace_name": "Workspace B",
+                    "bot_id": "bot-b",
+                }
+            )
+
+            self.assertEqual(first["id"], same_workspace["id"])
+            self.assertNotEqual(first["id"], second["id"])
+            self.assertEqual(first["email"], "a@example.com")
+
+    def test_session_token_round_trips_and_rejects_tampering(self) -> None:
+        token = web._make_session_token(42, "test-secret")
+
+        payload = web._read_session_token(token, "test-secret")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["user_id"], 42)
+        self.assertIsNone(web._read_session_token(f"{token}x", "test-secret"))
+        self.assertIsNone(web._read_session_token(token, "other-secret"))
+
+    def test_current_user_reads_signed_browser_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(Path(tmp) / "nocturne.sqlite3")
+            db = Database(settings)
+            db.initialize()
+            user = db.user_for_notion_oauth({"workspace_id": "workspace-a", "bot_id": "bot-a"})
+            token = web._make_session_token(user["id"], settings.encryption_key)
+            request = SimpleNamespace(
+                cookies={web.SESSION_COOKIE: token},
+                app=SimpleNamespace(state=SimpleNamespace(settings=settings, db=db)),
+            )
+
+            current = web._current_user(request)
+
+            self.assertIsNotNone(current)
+            self.assertEqual(current["id"], user["id"])
+            request.cookies = {}
+            self.assertIsNone(web._current_user(request))
+
+    def test_scheduler_only_runs_oauth_connected_users(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(Path(tmp) / "nocturne.sqlite3")
+            db = Database(settings)
+            db.initialize()
+            oauth_user = db.user_for_notion_oauth({"workspace_id": "workspace-a", "bot_id": "bot-a"})
+            db.update(
+                "UPDATE connections SET notion_access_token_encrypted = ? WHERE user_id = ?",
+                ("encrypted-token", oauth_user["id"]),
+            )
+            db.update(
+                "UPDATE notification_settings SET scan_time = ? WHERE user_id = ?",
+                (local_hhmm("Asia/Seoul"), oauth_user["id"]),
+            )
+            calls: list[tuple[int, bool]] = []
+            harness = SimpleNamespace(run_for_user=lambda user_id, manual=False: calls.append((user_id, manual)))
+
+            asyncio.run(SchedulerLoop(db, harness)._tick())
+
+            self.assertEqual(calls, [(oauth_user["id"], False)])
 
     def test_proposal_writer_cache_matches_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -503,6 +588,7 @@ class CoreTest(unittest.TestCase):
         self.assertIn("<svg", page_html)
         self.assertIn("페이지 설정", page_html)
         self.assertIn("로그아웃", page_html)
+        self.assertIn('action="/logout"', page_html)
         self.assertIn("data-target-exclusions", page_html)
         self.assertNotIn("제외 페이지 ID", page_html)
         self.assertNotIn("알림 설정", page_html)

@@ -16,6 +16,60 @@ from app import ui
 
 router = APIRouter()
 
+SESSION_COOKIE = "nocturne_session"
+SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+
+
+def _current_user(request: Request) -> object | None:
+    token = request.cookies.get(SESSION_COOKIE)
+    payload = _read_session_token(token, request.app.state.settings.encryption_key) if token else None
+    if not payload:
+        return None
+    try:
+        user_id = int(payload["user_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return request.app.state.db.user_by_id(user_id)
+
+
+def _auth_redirect() -> RedirectResponse:
+    return _redirect("/", "Notion으로 로그인해 주세요.")
+
+
+def _auth_json() -> JSONResponse:
+    return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+
+
+def _set_session_cookie(response: RedirectResponse, request: Request, user_id: int) -> None:
+    token = _make_session_token(user_id, request.app.state.settings.encryption_key)
+    secure = request.url.scheme == "https" or request.app.state.settings.app_url.startswith("https://")
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+    )
+
+
+def _clear_session_cookie(response: RedirectResponse) -> None:
+    response.delete_cookie(SESSION_COOKIE)
+
+
+def _anonymous_connection() -> dict[str, object]:
+    return {
+        "notion_access_token_encrypted": None,
+        "notion_workspace_id": "",
+        "notion_workspace_name": "",
+        "notification_email": "",
+        "notification_email_verified": 0,
+    }
+
+
+def _anonymous_settings() -> dict[str, object]:
+    return {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
+
 
 @router.get("/favicon.ico")
 def favicon() -> FileResponse:
@@ -24,15 +78,22 @@ def favicon() -> FileResponse:
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, notice: str | None = None, dashboard: int = 0) -> str:
+    user = _current_user(request)
     if dashboard:
+        if not user:
+            return _auth_redirect()
         return dashboard_page(request, notice)
+    if user:
+        return RedirectResponse("/dashboard", status_code=303)
     return ui.intro_page(notice)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard_page(request: Request, notice: str | None = None) -> str:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     connection = db.connection_for_user(user["id"])
     settings = db.notification_settings_for_user(user["id"])
     targets = db.active_targets(user["id"])
@@ -45,7 +106,18 @@ def dashboard_page(request: Request, notice: str | None = None) -> str:
 @router.get("/onboarding", response_class=HTMLResponse)
 def onboarding(request: Request, notice: str | None = None, step: int = 0) -> str:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        if "step" in request.query_params and step > 0:
+            return _auth_redirect()
+        return ui.onboarding_page(
+            _anonymous_connection(),
+            _anonymous_settings(),
+            [],
+            False,
+            notice,
+            0,
+        )
     connection = db.connection_for_user(user["id"])
     targets = db.active_targets(user["id"])
     review_acknowledged = _progress_done(db, user["id"], "review_boundary")
@@ -73,7 +145,9 @@ def onboarding(request: Request, notice: str | None = None, step: int = 0) -> st
 @router.post("/onboarding/review-boundary")
 def acknowledge_review_boundary(request: Request) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     connection = db.connection_for_user(user["id"])
     if not connection["notion_access_token_encrypted"]:
         return _redirect("/onboarding?step=0", "먼저 Notion을 연결해야 합니다.")
@@ -91,45 +165,51 @@ def acknowledge_review_boundary(request: Request) -> RedirectResponse:
 
 @router.get("/auth/notion/start")
 def notion_start(request: Request, next_path: str | None = Query(None, alias="next")) -> RedirectResponse:
-    db = request.app.state.db
-    user = db.default_user()
     notion = request.app.state.notion
+    return_to = _safe_return(next_path, "/onboarding?step=1")
     try:
-        url = notion.oauth_start_url(_make_state(user["id"], request.app.state.settings.encryption_key, next_path or "/settings"))
+        url = notion.oauth_start_url(_make_state(request.app.state.settings.encryption_key, return_to))
     except Exception as exc:
-        return _redirect(_safe_return(next_path, "/settings"), f"Notion OAuth 시작 실패: {exc}")
+        return _redirect("/", f"Notion OAuth 시작 실패: {exc}")
     return RedirectResponse(url, status_code=303)
 
 
 @router.get("/auth/notion/callback")
 def notion_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None) -> RedirectResponse:
     if error:
-        return _redirect("/settings", f"Notion OAuth 오류: {error}")
+        return _redirect("/", f"Notion OAuth 오류: {error}")
     if not code or not state:
-        return _redirect("/settings", "Notion OAuth callback 값이 빠져 있습니다.")
+        return _redirect("/", "Notion OAuth callback 값이 빠져 있습니다.")
     state_data = _read_state(state, request.app.state.settings.encryption_key)
     if state_data is None:
-        return _redirect("/settings", "Notion OAuth state를 확인하지 못했습니다.")
-    user_id = state_data["user_id"]
+        return _redirect("/", "Notion OAuth state를 확인하지 못했습니다.")
     return_to = state_data["return_to"]
     try:
         oauth_data = request.app.state.notion.exchange_code(code)
+        user = request.app.state.db.user_for_notion_oauth(oauth_data)
+        user_id = user["id"]
         request.app.state.notion.save_oauth_connection(user_id, oauth_data)
         request.app.state.db.log("notion_connected", user_id=user_id, payload={"workspace_id": oauth_data.get("workspace_id")})
-        return _redirect(return_to, "Notion 연결을 완료했습니다.")
+        response = _redirect(return_to, "Notion 연결을 완료했습니다.")
+        _set_session_cookie(response, request, user_id)
+        return response
     except Exception as exc:
-        return _redirect(return_to, f"Notion 연결 실패: {exc}")
+        return _redirect("/", f"Notion 연결 실패: {exc}")
 
 
 @router.post("/settings/openrouter")
 def save_openrouter(request: Request, api_key: str = Form(...), return_to: str = Form("")) -> RedirectResponse:
+    if not _current_user(request):
+        return _auth_redirect()
     return _redirect(_safe_return(return_to, "/settings"), "OpenRouter는 서버 환경변수 OPENROUTER_API_KEY를 사용합니다.")
 
 
 @router.post("/settings/email")
 def send_email_verification(request: Request, email: str = Form(...), return_to: str = Form("")) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     try:
         dev_code = request.app.state.email_service.send_verification(user["id"], email.strip())
         db.update(
@@ -149,7 +229,9 @@ def send_email_verification(request: Request, email: str = Form(...), return_to:
 @router.post("/settings/email/verify")
 def verify_email(request: Request, code: str = Form(...), return_to: str = Form("")) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     ok, error = request.app.state.email_service.verify_code(user["id"], code)
     if not ok:
         return _redirect(_safe_return(return_to, "/settings"), error or "이메일 인증에 실패했습니다.")
@@ -159,6 +241,8 @@ def verify_email(request: Request, code: str = Form(...), return_to: str = Form(
 
 @router.get("/targets", response_class=HTMLResponse)
 def targets(request: Request, notice: str | None = None) -> str:
+    if not _current_user(request):
+        return _auth_redirect()
     return settings_page(request, notice)
 
 
@@ -169,7 +253,9 @@ def search_notion_targets(
     object_type: str = "",
     limit: int = Query(50, ge=1, le=100),
 ) -> JSONResponse:
-    user = request.app.state.db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     try:
         items = request.app.state.notion.search_selectable_objects(
             user["id"],
@@ -191,7 +277,9 @@ def notion_target_children(
     object_type: str = "",
     limit: int = Query(50, ge=1, le=100),
 ) -> JSONResponse:
-    user = request.app.state.db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     try:
         items = request.app.state.notion.list_selectable_children(
             user["id"],
@@ -208,14 +296,18 @@ def notion_target_children(
 @router.get("/api/knowledge-graph")
 def knowledge_graph(request: Request) -> JSONResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     return JSONResponse(_knowledge_graph_payload(db, user["id"]))
 
 
 @router.post("/api/knowledge-graph/sync")
 def sync_knowledge_graph(request: Request) -> JSONResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     try:
         request.app.state.notion.sync_knowledge_graph(user["id"])
     except Exception as exc:
@@ -228,7 +320,9 @@ def sync_knowledge_graph(request: Request) -> JSONResponse:
 @router.post("/api/knowledge-graph/proposals/{proposal_id}/approve")
 def approve_graph_proposal(request: Request, proposal_id: int) -> JSONResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     proposal = db.row(
         """
         SELECT * FROM proposals_cache
@@ -276,7 +370,9 @@ def add_target(
     return_to: str = Form(""),
 ) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     object_id = notion_object_id.strip()
     object_type = notion_object_type.strip()
     display_title = title.strip()
@@ -316,7 +412,9 @@ def add_target(
 @router.post("/targets/{target_id}/delete")
 def delete_target(request: Request, target_id: int) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     db.update(
         "UPDATE scan_targets SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
         (utc_now_iso(), target_id, user["id"]),
@@ -327,7 +425,9 @@ def delete_target(request: Request, target_id: int) -> RedirectResponse:
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, notice: str | None = None, section: str = "pages") -> str:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     return ui.settings_page(
         db.notification_settings_for_user(user["id"]),
         db.connection_for_user(user["id"]),
@@ -354,7 +454,9 @@ def update_notifications(
     return_to: str = Form(""),
 ) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     db.update(
         """
         UPDATE notification_settings
@@ -370,7 +472,9 @@ def update_notifications(
 @router.get("/runs", response_class=HTMLResponse)
 def runs(request: Request, notice: str | None = None, limit: int = Query(20)) -> str:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     selected_limit = limit if limit in {20, 50, 100} else 20
     run_rows, logs, timezone_name = _runs_snapshot(db, user["id"], selected_limit)
     return ui.runs_page(run_rows, logs, notice, timezone_name, selected_limit)
@@ -379,7 +483,9 @@ def runs(request: Request, notice: str | None = None, limit: int = Query(20)) ->
 @router.get("/api/runs")
 def runs_api(request: Request, limit: int = Query(20)) -> JSONResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     selected_limit = limit if limit in {20, 50, 100} else 20
     run_rows, logs, timezone_name = _runs_snapshot(db, user["id"], selected_limit)
     return JSONResponse(
@@ -399,7 +505,9 @@ def runs_api(request: Request, limit: int = Query(20)) -> JSONResponse:
 @router.get("/api/runs/{run_id}/errors")
 def run_errors_api(request: Request, run_id: str) -> JSONResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
     run = db.row(
         """
         SELECT * FROM runs
@@ -452,7 +560,9 @@ def run_errors_api(request: Request, run_id: str) -> JSONResponse:
 
 @router.post("/runs/manual")
 def manual_run(request: Request, background_tasks: BackgroundTasks, return_to: str = Form("")) -> RedirectResponse:
-    user = request.app.state.db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     background_tasks.add_task(request.app.state.harness.run_for_user, user["id"], manual=True)
     target = _safe_return(return_to, "/runs")
     if not target.startswith("/runs"):
@@ -462,7 +572,9 @@ def manual_run(request: Request, background_tasks: BackgroundTasks, return_to: s
 
 @router.post("/apply-approved")
 def apply_approved(request: Request, return_to: str = Form("")) -> RedirectResponse:
-    user = request.app.state.db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     target = _safe_return(return_to, "/dashboard")
     try:
         applied, failed = request.app.state.harness.apply_approved_for_user(user["id"])
@@ -473,13 +585,17 @@ def apply_approved(request: Request, return_to: str = Form("")) -> RedirectRespo
 
 @router.get("/account", response_class=HTMLResponse)
 def account(request: Request, notice: str | None = None) -> str:
+    if not _current_user(request):
+        return _auth_redirect()
     return settings_page(request, notice, "pages")
 
 
 @router.post("/account/disconnect/notion")
 def disconnect_notion(request: Request) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     db.update(
         """
         UPDATE connections
@@ -496,13 +612,17 @@ def disconnect_notion(request: Request) -> RedirectResponse:
         (utc_now_iso(), user["id"]),
     )
     db.log("notion_disconnected", user_id=user["id"])
-    return _redirect("/settings?section=pages", "Notion 연결을 해제했습니다.")
+    response = _redirect("/", "Notion 연결을 해제했습니다.")
+    _clear_session_cookie(response)
+    return response
 
 
 @router.post("/account/delete-local-data")
 def delete_local_data(request: Request) -> RedirectResponse:
     db = request.app.state.db
-    user = db.default_user()
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
     with db.connection() as conn:
         for table in [
             "connections",
@@ -519,10 +639,18 @@ def delete_local_data(request: Request) -> RedirectResponse:
             "onboarding_progress",
         ]:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user["id"],))
-        conn.execute("UPDATE users SET last_successful_scan_at = NULL, last_scheduled_run_date = NULL WHERE id = ?", (user["id"],))
+        conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
         conn.commit()
-    db.initialize()
-    return _redirect("/", "로컬 데이터를 삭제했습니다.")
+    response = _redirect("/", "로컬 데이터를 삭제했습니다.")
+    _clear_session_cookie(response)
+    return response
+
+
+@router.post("/logout")
+def logout(request: Request) -> RedirectResponse:
+    response = _redirect("/", "로그아웃했습니다.")
+    _clear_session_cookie(response)
+    return response
 
 
 def _redirect(path: str, notice: str) -> RedirectResponse:
@@ -806,27 +934,45 @@ def _decode_string_list(value: str | None) -> list[str]:
     return [str(item) for item in decoded if str(item).strip()]
 
 
-def _make_state(user_id: int, secret: str, return_to: str) -> str:
-    payload = {
-        "user_id": user_id,
-        "timestamp": int(time.time()),
-        "return_to": _safe_return(return_to, "/account"),
-    }
+def _make_state(secret: str, return_to: str) -> str:
+    payload = {"return_to": _safe_return(return_to, "/onboarding?step=1")}
+    return _signed_payload(payload, secret)
+
+
+def _read_state(state: str, secret: str) -> dict[str, str] | None:
+    payload = _read_signed_payload(state, secret, max_age_seconds=60 * 60)
+    if not payload:
+        return None
+    return {"return_to": _safe_return(str(payload.get("return_to") or ""), "/onboarding?step=1")}
+
+
+def _make_session_token(user_id: int, secret: str) -> str:
+    return _signed_payload({"user_id": user_id}, secret)
+
+
+def _read_session_token(token: str, secret: str) -> dict[str, object] | None:
+    return _read_signed_payload(token, secret, max_age_seconds=SESSION_MAX_AGE_SECONDS)
+
+
+def _signed_payload(payload: dict[str, object], secret: str) -> str:
+    payload = {**payload, "timestamp": int(time.time())}
     body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("utf-8")
     signature = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), sha256).hexdigest()
     return f"{body}.{signature}"
 
 
-def _read_state(state: str, secret: str) -> dict[str, int | str] | None:
+def _read_signed_payload(value: str, secret: str, *, max_age_seconds: int) -> dict[str, object] | None:
     try:
-        body, signature = state.rsplit(".", 1)
+        body, signature = value.rsplit(".", 1)
         expected = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             return None
         payload = json.loads(base64.urlsafe_b64decode(body.encode("utf-8")).decode("utf-8"))
-        if int(time.time()) - int(payload["timestamp"]) > 60 * 60:
+        if int(time.time()) - int(payload["timestamp"]) > max_age_seconds:
             return None
-        return {"user_id": int(payload["user_id"]), "return_to": _safe_return(str(payload.get("return_to") or ""), "/account")}
+        if not isinstance(payload, dict):
+            return None
+        return payload
     except Exception:
         return None
 

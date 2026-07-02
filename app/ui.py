@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702m"
+ASSET_VERSION = "20260702n"
 
 
 EVENT_LABELS = {
@@ -546,7 +546,7 @@ def _settings_pages_view(connection: sqlite3.Row, rows: str) -> str:
     {status_pill(bool(connection["notion_access_token_encrypted"]))}
     <div class="settings-inline-actions">
       <a class="button primary" href="/auth/notion/start?next=/settings?section=pages">연결</a>
-      <form method="post" action="/account/disconnect/notion"><button class="ghost" type="submit">로그아웃</button></form>
+      <form method="post" action="/logout"><button class="ghost" type="submit">로그아웃</button></form>
     </div>
   </div>
   <form class="form-grid target-picker-form" method="post" action="/targets" data-target-form>

@@ -17,7 +17,6 @@
     meta: root.querySelector("[data-inspector-meta]"),
     actions: root.querySelector("[data-inspector-actions]"),
   };
-  const storageKey = "nocturne.knowledgeGraph.v1";
   const state = {
     graph: null,
     selected: null,
@@ -30,8 +29,6 @@
   };
 
   function boot() {
-    const cached = readCache();
-    if (cached) renderData(cached, { fromCache: true });
     if (typeof ForceGraph !== "function") {
       setStatus("force-graph 로드 실패");
       return;
@@ -166,6 +163,7 @@
   async function loadGraph() {
     try {
       const response = await fetch("/api/knowledge-graph");
+      if (redirectIfUnauthorized(response)) return;
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "그래프를 불러오지 못했습니다.");
       renderData(data);
@@ -188,6 +186,7 @@
     }
     try {
       const response = await fetch("/api/knowledge-graph/sync", { method: "POST" });
+      if (redirectIfUnauthorized(response)) return;
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "동기화 실패");
       renderData(data, { fromSync: true });
@@ -205,6 +204,7 @@
     setStatus("승인 반영 중");
     try {
       const response = await fetch(`/api/knowledge-graph/proposals/${node.proposalId}/approve`, { method: "POST" });
+      if (redirectIfUnauthorized(response)) return;
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "승인 실패");
       renderData(data);
@@ -221,8 +221,7 @@
     nodeCountEl.textContent = String(state.data.meta.nodeCount || state.data.nodes.length);
     linkCountEl.textContent = String(state.data.meta.linkCount || state.data.links.length);
     proposalCountEl.textContent = String(state.data.meta.proposalCount || 0);
-    if (!options || !options.fromCache) writeCache(state.data);
-    setStatus(options && options.fromCache ? "로컬 Graph" : syncStatusText(state.data.meta));
+    setStatus(syncStatusText(state.data.meta));
     updateEmptyState();
     if (state.graph) {
       resizeGraph();
@@ -434,24 +433,10 @@
     while (element.firstChild) element.removeChild(element.firstChild);
   }
 
-  function readCache() {
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return null;
-      const data = JSON.parse(raw);
-      if (!Array.isArray(data.nodes) || !Array.isArray(data.links)) return null;
-      return data;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function writeCache(data) {
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(data));
-    } catch (error) {
-      // Browser storage is an optimization only.
-    }
+  function redirectIfUnauthorized(response) {
+    if (response.status !== 401) return false;
+    window.location.assign("/");
+    return true;
   }
 
   if (document.readyState === "loading") {

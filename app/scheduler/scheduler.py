@@ -36,7 +36,14 @@ class SchedulerLoop:
             await asyncio.sleep(self.interval_seconds)
 
     async def _tick(self) -> None:
-        users = self.db.rows("SELECT * FROM users ORDER BY id")
+        users = self.db.rows(
+            """
+            SELECT u.* FROM users u
+            JOIN connections c ON c.user_id = u.id
+            WHERE c.notion_access_token_encrypted IS NOT NULL
+            ORDER BY u.id
+            """
+        )
         for user in users:
             prefs = self.db.notification_settings_for_user(user["id"])
             timezone = prefs["timezone"] or user["timezone"] or "UTC"
