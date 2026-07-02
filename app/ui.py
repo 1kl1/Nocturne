@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702d"
+ASSET_VERSION = "20260702e"
 
 
 EVENT_LABELS = {
@@ -203,7 +203,6 @@ def onboarding_page(
           {back_button}
           <p class="kicker">03 · morning brief</p>
           <h1>아침 알림은 이메일로 받습니다.</h1>
-          <p class="step-lede">SMTP 발송 설정은 서버 환경변수로 관리하고, 사용자는 받을 이메일만 인증합니다.</p>
           {email_flow}
         </article>
 
@@ -247,10 +246,10 @@ def _onboarding_email_flow(
 <form class="onboarding-form time-strip" method="post" action="/notifications">
   <input type="hidden" name="return_to" value="/onboarding?step=3">
   <input type="hidden" name="default_channel" value="email">
+  <input type="hidden" name="notify_zero" value="1">
   <label>점검 <input type="time" name="scan_time" value="{_escape(settings["scan_time"])}"></label>
   <label>알림 <input type="time" name="notify_time" value="{_escape(settings["notify_time"])}"></label>
   <label>타임존 <input name="timezone" value="{_escape(settings["timezone"])}"></label>
-  <label class="checkline"><input type="checkbox" name="notify_zero" checked><span>0건 알림</span></label>
   <button class="primary ink-button" type="submit">시간 저장하고 계속</button>
 </form>
 """
@@ -265,7 +264,6 @@ def _onboarding_email_flow(
   </label>
   <button type="submit">확인</button>
 </form>
-<p class="setup-note">{_escape(connection["notification_email"])} 주소로 보낸 코드를 입력하면 시간 설정이 열립니다.</p>
 """
 
     return f"""
@@ -380,10 +378,6 @@ def _next_schedule_summary(settings: sqlite3.Row) -> str:
   <div>
     <span>타임존</span>
     <strong>{_escape(timezone_name)}</strong>
-  </div>
-  <div>
-    <span>0건 알림</span>
-    <strong>{'ON' if settings["notify_zero"] else 'OFF'}</strong>
   </div>
 </div>
 """
@@ -556,6 +550,7 @@ def settings_page(
   <div class="panel-head"><h2>알림 설정</h2></div>
   <form class="form-grid" method="post" action="/notifications">
     <input type="hidden" name="default_channel" value="email">
+    <input type="hidden" name="notify_zero" value="1">
     <label>야간 점검 시각
       <input type="time" name="scan_time" value="{_escape(settings["scan_time"])}" required>
     </label>
@@ -564,10 +559,6 @@ def settings_page(
     </label>
     <label>타임존
       <input name="timezone" value="{_escape(settings["timezone"])}" required>
-    </label>
-    <label class="checkline">
-      <input type="checkbox" name="notify_zero" {'checked' if settings["notify_zero"] else ''}>
-      <span>0건 알림 발송</span>
     </label>
     <button class="primary" type="submit">저장</button>
   </form>
@@ -719,7 +710,7 @@ def notifications_page(settings: sqlite3.Row, connection: sqlite3.Row, notice: s
     body = f"""
 <section class="page-head">
   <div>
-    <p class="eyebrow">SMTP 이메일 발송 방식</p>
+    <p class="eyebrow">이메일 알림</p>
     <h1>알림 설정</h1>
   </div>
 </section>
@@ -727,6 +718,7 @@ def notifications_page(settings: sqlite3.Row, connection: sqlite3.Row, notice: s
 <section class="panel">
   <form class="form-grid" method="post" action="/notifications">
     <input type="hidden" name="default_channel" value="email">
+    <input type="hidden" name="notify_zero" value="1">
     <label>야간 점검 시각
       <input type="time" name="scan_time" value="{_escape(settings["scan_time"])}" required>
     </label>
@@ -735,10 +727,6 @@ def notifications_page(settings: sqlite3.Row, connection: sqlite3.Row, notice: s
     </label>
     <label>타임존
       <input name="timezone" value="{_escape(settings["timezone"])}" required>
-    </label>
-    <label class="checkline">
-      <input type="checkbox" name="notify_zero" {'checked' if settings["notify_zero"] else ''}>
-      <span>0건 알림 발송</span>
     </label>
     <button class="primary" type="submit">저장</button>
   </form>

@@ -253,16 +253,20 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("하위 페이지 포함", html)
         self.assertIn('name="email"', html)
         self.assertNotIn('name="code"', html)
+        self.assertNotIn("SMTP", html)
         self.assertNotIn("시간 저장하고 계속", html)
 
         pending = {**connection, "notification_email": "me@example.com"}
         pending_html = ui.onboarding_page(pending, settings, [target], False, step=2)
         self.assertIn('name="code"', pending_html)
+        self.assertNotIn("주소로 보낸 코드를 입력", pending_html)
         self.assertNotIn("시간 저장하고 계속", pending_html)
 
         verified = {**pending, "notification_email_verified": 1}
         verified_html = ui.onboarding_page(verified, settings, [target], False, step=2)
         self.assertIn("시간 저장하고 계속", verified_html)
+        self.assertIn('name="notify_zero" value="1"', verified_html)
+        self.assertNotIn("0건 알림", verified_html)
         self.assertNotIn('placeholder="000000"', verified_html)
 
 

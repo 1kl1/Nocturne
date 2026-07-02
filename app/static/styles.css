@@ -1566,13 +1566,6 @@ time small,
   overflow-wrap: anywhere;
 }
 
-.setup-note {
-  margin: -2px 0 0;
-  color: #646b65;
-  font-size: 13px;
-  font-weight: 700;
-}
-
 .setup-checklist {
   display: grid;
   border-top: 1px solid #d7ddd8;
@@ -1708,10 +1701,8 @@ time small,
 
 .time-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  border-top: 1px solid #d7ddd8;
-  padding-top: 14px;
   align-items: end;
 }
 

@@ -314,7 +314,6 @@ def update_notifications(
     scan_time: str = Form(...),
     notify_time: str = Form(...),
     timezone: str = Form(...),
-    notify_zero: str | None = Form(None),
     return_to: str = Form(""),
 ) -> RedirectResponse:
     db = request.app.state.db
@@ -325,7 +324,7 @@ def update_notifications(
         SET default_channel = ?, scan_time = ?, notify_time = ?, timezone = ?, notify_zero = ?, updated_at = ?
         WHERE user_id = ?
         """,
-        ("email", scan_time, notify_time, timezone, 1 if notify_zero else 0, utc_now_iso(), user["id"]),
+        ("email", scan_time, notify_time, timezone, 1, utc_now_iso(), user["id"]),
     )
     db.update("UPDATE users SET timezone = ? WHERE id = ?", (timezone, user["id"]))
     return _redirect(_safe_return(return_to, "/settings"), "알림 설정을 저장했습니다.")
