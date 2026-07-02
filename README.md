@@ -9,7 +9,8 @@ Nocturne MVP is a single-container FastAPI application that audits selected Noti
 - Encrypted storage for Notion tokens and email verification state.
 - Notion OAuth, page/database expansion, child-page traversal, block text extraction, proposal inbox creation, proposal page writes, and approved-item application.
 - OpenRouter adapter using the server-provided `OPENROUTER_API_KEY` and service default model from `OPENROUTER_DEFAULT_MODEL`.
-- Web search adapter with `tavily`, `brave`, `serper`, or `none`.
+- OpenRouter web search plugin support using the existing `OPENROUTER_API_KEY`.
+- Web search adapter with `tavily`, `brave`, `serper`, or `none` for explicit pre-search results.
 - Email notifications through SMTP. `console` remains useful for local development.
 - Agent tool/action logging via `agent_tool_call` audit events.
 - Internal scheduler loop for nightly runs in the user's timezone.
@@ -46,6 +47,9 @@ NOTION_CLIENT_SECRET=
 NOTION_REDIRECT_URI=
 OPENROUTER_DEFAULT_MODEL=
 OPENROUTER_API_KEY=
+OPENROUTER_WEB_SEARCH_ENABLED=
+OPENROUTER_WEB_SEARCH_ENGINE=
+OPENROUTER_WEB_SEARCH_MAX_RESULTS=
 EMAIL_PROVIDER=
 EMAIL_FROM=
 SMTP_HOST=
@@ -57,6 +61,25 @@ WEB_SEARCH_API_KEY=
 ```
 
 OpenRouter is no longer configured by each user. Set `OPENROUTER_API_KEY` as a server environment variable, and keep it out of logs and screenshots.
+
+## Web Search
+
+Recommended: enable OpenRouter's web plugin with the existing OpenRouter key.
+
+```bash
+OPENROUTER_WEB_SEARCH_ENABLED=true
+OPENROUTER_WEB_SEARCH_ENGINE=
+OPENROUTER_WEB_SEARCH_MAX_RESULTS=5
+```
+
+Leave `OPENROUTER_WEB_SEARCH_ENGINE` empty for OpenRouter's default engine selection, or set it to `native`, `exa`, `parallel`, `perplexity`, or `firecrawl`. OpenRouter web search may add usage cost.
+
+For explicit pre-search results passed into the audit prompt, use one of the standalone providers:
+
+```bash
+WEB_SEARCH_PROVIDER=tavily
+WEB_SEARCH_API_KEY=...
+```
 
 SMTP is handled by the app through Python's `smtplib`, but the project cannot send real email by itself without a reachable SMTP service. If SMTP fails in deployment, check these first:
 

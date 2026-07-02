@@ -72,6 +72,49 @@ SCHEMA: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        notion_object_id TEXT NOT NULL,
+        object_type TEXT NOT NULL CHECK(object_type IN ('page', 'database')),
+        title TEXT NOT NULL,
+        url TEXT,
+        parent_id TEXT,
+        parent_type TEXT,
+        source_target_id INTEGER,
+        last_edited_time TEXT,
+        first_seen_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, notion_object_id),
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_graph_edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        source_object_id TEXT NOT NULL,
+        target_object_id TEXT NOT NULL,
+        relation_type TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, source_object_id, target_object_id, relation_type),
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_graph_syncs (
+        user_id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL,
+        node_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        last_synced_at TEXT,
+        error_message TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -108,9 +151,14 @@ SCHEMA: tuple[str, ...] = (
         apply_mode TEXT NOT NULL,
         original_sentence_hash TEXT NOT NULL,
         suggested_sentence_hash TEXT NOT NULL,
+        original_sentence TEXT,
+        suggested_sentence TEXT,
+        rationale TEXT,
+        source_urls TEXT,
         status TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
+        updated_at TEXT,
         UNIQUE(user_id, source_page_id, block_id, original_sentence_hash, suggested_sentence_hash),
         FOREIGN KEY(user_id) REFERENCES users(id)
     )
@@ -175,6 +223,7 @@ class Database:
             conn.execute("PRAGMA foreign_keys = ON")
             for statement in SCHEMA:
                 conn.execute(statement)
+            self._ensure_schema_compat(conn)
             self._ensure_default_records(conn)
             conn.commit()
 
@@ -213,6 +262,19 @@ class Database:
             """,
             (user_id, now, now),
         )
+
+    def _ensure_schema_compat(self, conn: sqlite3.Connection) -> None:
+        proposal_columns = {row["name"] for row in conn.execute("PRAGMA table_info(proposals_cache)").fetchall()}
+        additions = {
+            "original_sentence": "original_sentence TEXT",
+            "suggested_sentence": "suggested_sentence TEXT",
+            "rationale": "rationale TEXT",
+            "source_urls": "source_urls TEXT",
+            "updated_at": "updated_at TEXT",
+        }
+        for column, ddl in additions.items():
+            if column not in proposal_columns:
+                conn.execute(f"ALTER TABLE proposals_cache ADD COLUMN {ddl}")
 
     def default_user(self) -> sqlite3.Row:
         with self.connection() as conn:

@@ -64,6 +64,14 @@ class ApprovedProposal:
     proposal_title: str
 
 
+@dataclass(frozen=True)
+class KnowledgeGraphSyncResult:
+    status: str
+    node_count: int
+    edge_count: int
+    errors: tuple[str, ...] = ()
+
+
 class NotionService:
     def __init__(self, settings: Settings, db: Database, secret_box: SecretBox):
         self.settings = settings
@@ -267,6 +275,341 @@ class NotionService:
                     payload={"target_id": target["id"], "error": str(exc)},
                 )
         return list(pages.values())
+
+    def sync_knowledge_graph(self, user_id: int) -> KnowledgeGraphSyncResult:
+        targets = self.db.active_targets(user_id)
+        if not targets:
+            self._replace_graph_cache(user_id, {}, set(), "success", None)
+            return KnowledgeGraphSyncResult(status="success", node_count=0, edge_count=0)
+
+        nodes: dict[str, dict[str, Any]] = {}
+        edges: set[tuple[str, str, str]] = set()
+        visited_pages: set[str] = set()
+        visited_databases: set[str] = set()
+        errors: list[str] = []
+
+        for target in targets:
+            excluded = set(Database.decode_json_array(target["excluded_page_ids"]))
+            object_id = str(target["notion_object_id"])
+            try:
+                if target["notion_object_type"] == "page":
+                    self._sync_graph_page(
+                        user_id,
+                        object_id,
+                        nodes,
+                        edges,
+                        visited_pages,
+                        visited_databases,
+                        excluded,
+                        target["id"],
+                    )
+                else:
+                    self._sync_graph_database(
+                        user_id,
+                        object_id,
+                        nodes,
+                        edges,
+                        visited_pages,
+                        visited_databases,
+                        excluded,
+                        target["id"],
+                    )
+            except Exception as exc:
+                message = f'{target["title"]}: {exc}'
+                errors.append(message)
+                self.db.log(
+                    "knowledge_graph_sync_target_failed",
+                    user_id=user_id,
+                    level="warning",
+                    payload={"target_id": target["id"], "error": str(exc)},
+                )
+
+        if not nodes and errors:
+            error_message = "\n".join(errors[:5])
+            self._record_graph_sync(user_id, "failed", 0, 0, error_message)
+            raise NotionError(f"지식 그래프 동기화 실패: {error_message}")
+
+        self._replace_graph_cache(user_id, nodes, edges, "partial_success" if errors else "success", "\n".join(errors[:5]) or None)
+        return KnowledgeGraphSyncResult(
+            status="partial_success" if errors else "success",
+            node_count=len(nodes),
+            edge_count=len(edges),
+            errors=tuple(errors),
+        )
+
+    def _sync_graph_page(
+        self,
+        user_id: int,
+        page_id: str,
+        nodes: dict[str, dict[str, Any]],
+        edges: set[tuple[str, str, str]],
+        visited_pages: set[str],
+        visited_databases: set[str],
+        excluded: set[str],
+        source_target_id: int | None,
+    ) -> None:
+        if page_id in excluded:
+            return
+        if page_id not in nodes:
+            page = self.retrieve_page(user_id, page_id)
+            nodes[page_id] = self._graph_page_node(page, source_target_id)
+        if page_id in visited_pages:
+            return
+        visited_pages.add(page_id)
+        self._walk_graph_blocks(
+            user_id,
+            page_id,
+            page_id,
+            nodes,
+            edges,
+            visited_pages,
+            visited_databases,
+            excluded,
+            source_target_id,
+        )
+
+    def _sync_graph_database(
+        self,
+        user_id: int,
+        database_id: str,
+        nodes: dict[str, dict[str, Any]],
+        edges: set[tuple[str, str, str]],
+        visited_pages: set[str],
+        visited_databases: set[str],
+        excluded: set[str],
+        source_target_id: int | None,
+    ) -> None:
+        if database_id not in nodes:
+            database = self.retrieve_database(user_id, database_id)
+            nodes[database_id] = self._graph_database_node(database, source_target_id)
+        if database_id in visited_databases:
+            return
+        visited_databases.add(database_id)
+        for page in self.query_database_pages(user_id, database_id):
+            page_id = str(page.get("id") or "")
+            if not page_id or page_id in excluded:
+                continue
+            nodes[page_id] = self._graph_page_node(page, source_target_id)
+            edges.add((database_id, page_id, "database_page"))
+            self._sync_graph_page(
+                user_id,
+                page_id,
+                nodes,
+                edges,
+                visited_pages,
+                visited_databases,
+                excluded,
+                source_target_id,
+            )
+
+    def _walk_graph_blocks(
+        self,
+        user_id: int,
+        owner_page_id: str,
+        block_id: str,
+        nodes: dict[str, dict[str, Any]],
+        edges: set[tuple[str, str, str]],
+        visited_pages: set[str],
+        visited_databases: set[str],
+        excluded: set[str],
+        source_target_id: int | None,
+    ) -> None:
+        for block in self.list_block_children(user_id, block_id):
+            block_type = block.get("type")
+            if block_type == "child_page":
+                child_id = str(block.get("id") or "")
+                if not child_id or child_id in excluded:
+                    continue
+                try:
+                    page = self.retrieve_page(user_id, child_id)
+                    nodes[child_id] = self._graph_page_node(page, source_target_id)
+                except Exception:
+                    nodes.setdefault(child_id, self._graph_child_page_node(block, source_target_id))
+                edges.add((owner_page_id, child_id, "child_page"))
+                self._sync_graph_page(
+                    user_id,
+                    child_id,
+                    nodes,
+                    edges,
+                    visited_pages,
+                    visited_databases,
+                    excluded,
+                    source_target_id,
+                )
+            elif block_type == "child_database":
+                database_id = str(block.get("id") or "")
+                if not database_id:
+                    continue
+                try:
+                    database = self.retrieve_database(user_id, database_id)
+                    nodes[database_id] = self._graph_database_node(database, source_target_id)
+                except Exception:
+                    nodes.setdefault(database_id, self._graph_child_database_node(block, source_target_id))
+                edges.add((owner_page_id, database_id, "child_database"))
+                try:
+                    self._sync_graph_database(
+                        user_id,
+                        database_id,
+                        nodes,
+                        edges,
+                        visited_pages,
+                        visited_databases,
+                        excluded,
+                        source_target_id,
+                    )
+                except Exception as exc:
+                    self.db.log(
+                        "knowledge_graph_child_database_skipped",
+                        user_id=user_id,
+                        level="warning",
+                        payload={"database_id": database_id, "error": str(exc)},
+                    )
+            elif block.get("has_children"):
+                self._walk_graph_blocks(
+                    user_id,
+                    owner_page_id,
+                    str(block.get("id") or ""),
+                    nodes,
+                    edges,
+                    visited_pages,
+                    visited_databases,
+                    excluded,
+                    source_target_id,
+                )
+
+    def _graph_page_node(self, page: dict[str, Any], source_target_id: int | None) -> dict[str, Any]:
+        parent = page.get("parent") or {}
+        parent_type = str(parent.get("type") or "").replace("_id", "")
+        parent_id = str(parent.get(f"{parent_type}_id") or parent.get("block_id") or "")
+        return {
+            "notion_object_id": str(page.get("id") or ""),
+            "object_type": "page",
+            "title": self._title_from_page(page),
+            "url": str(page.get("url") or ""),
+            "parent_id": parent_id,
+            "parent_type": parent_type,
+            "source_target_id": source_target_id,
+            "last_edited_time": str(page.get("last_edited_time") or ""),
+        }
+
+    def _graph_database_node(self, database: dict[str, Any], source_target_id: int | None) -> dict[str, Any]:
+        parent = database.get("parent") or {}
+        parent_type = str(parent.get("type") or "").replace("_id", "")
+        parent_id = str(parent.get(f"{parent_type}_id") or parent.get("block_id") or "")
+        return {
+            "notion_object_id": str(database.get("id") or ""),
+            "object_type": "database",
+            "title": _database_title(database),
+            "url": str(database.get("url") or ""),
+            "parent_id": parent_id,
+            "parent_type": parent_type,
+            "source_target_id": source_target_id,
+            "last_edited_time": str(database.get("last_edited_time") or ""),
+        }
+
+    def _graph_child_page_node(self, block: dict[str, Any], source_target_id: int | None) -> dict[str, Any]:
+        return {
+            "notion_object_id": str(block.get("id") or ""),
+            "object_type": "page",
+            "title": str((block.get("child_page") or {}).get("title") or "Untitled"),
+            "url": "",
+            "parent_id": "",
+            "parent_type": "page",
+            "source_target_id": source_target_id,
+            "last_edited_time": str(block.get("last_edited_time") or ""),
+        }
+
+    def _graph_child_database_node(self, block: dict[str, Any], source_target_id: int | None) -> dict[str, Any]:
+        return {
+            "notion_object_id": str(block.get("id") or ""),
+            "object_type": "database",
+            "title": str((block.get("child_database") or {}).get("title") or "Untitled database"),
+            "url": "",
+            "parent_id": "",
+            "parent_type": "page",
+            "source_target_id": source_target_id,
+            "last_edited_time": str(block.get("last_edited_time") or ""),
+        }
+
+    def _replace_graph_cache(
+        self,
+        user_id: int,
+        nodes: dict[str, dict[str, Any]],
+        edges: set[tuple[str, str, str]],
+        status: str,
+        error_message: str | None,
+    ) -> None:
+        now = utc_now_iso()
+        valid_node_ids = set(nodes)
+        valid_edges = [edge for edge in edges if edge[0] in valid_node_ids and edge[1] in valid_node_ids]
+        with self.db.connection() as conn:
+            conn.execute("DELETE FROM knowledge_graph_edges WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM knowledge_graph_nodes WHERE user_id = ?", (user_id,))
+            for node in nodes.values():
+                conn.execute(
+                    """
+                    INSERT INTO knowledge_graph_nodes
+                        (user_id, notion_object_id, object_type, title, url, parent_id, parent_type,
+                         source_target_id, last_edited_time, first_seen_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        node["notion_object_id"],
+                        node["object_type"],
+                        node["title"],
+                        node["url"],
+                        node["parent_id"],
+                        node["parent_type"],
+                        node["source_target_id"],
+                        node["last_edited_time"],
+                        now,
+                        now,
+                    ),
+                )
+            for source, target, relation_type in valid_edges:
+                conn.execute(
+                    """
+                    INSERT INTO knowledge_graph_edges
+                        (user_id, source_object_id, target_object_id, relation_type, first_seen_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, source, target, relation_type, now, now),
+                )
+            conn.execute(
+                """
+                INSERT INTO knowledge_graph_syncs
+                    (user_id, status, node_count, edge_count, last_synced_at, error_message, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    status = excluded.status,
+                    node_count = excluded.node_count,
+                    edge_count = excluded.edge_count,
+                    last_synced_at = excluded.last_synced_at,
+                    error_message = excluded.error_message,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, status, len(nodes), len(valid_edges), now, error_message, now),
+            )
+            conn.commit()
+
+    def _record_graph_sync(self, user_id: int, status: str, node_count: int, edge_count: int, error_message: str | None) -> None:
+        now = utc_now_iso()
+        self.db.update(
+            """
+            INSERT INTO knowledge_graph_syncs
+                (user_id, status, node_count, edge_count, last_synced_at, error_message, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                status = excluded.status,
+                node_count = excluded.node_count,
+                edge_count = excluded.edge_count,
+                last_synced_at = excluded.last_synced_at,
+                error_message = excluded.error_message,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, status, node_count, edge_count, now, error_message, now),
+        )
 
     def _add_page_with_children(
         self,

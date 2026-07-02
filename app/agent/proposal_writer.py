@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from app.agent.types import PageCandidate, ProposalCandidate
@@ -61,8 +62,9 @@ class ProposalWriter:
             """
             INSERT OR IGNORE INTO proposals_cache
                 (user_id, run_id, notion_proposal_page_id, source_page_id, block_id, issue_type,
-                 apply_mode, original_sentence_hash, suggested_sentence_hash, status, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 apply_mode, original_sentence_hash, suggested_sentence_hash, original_sentence,
+                 suggested_sentence, rationale, source_urls, status, confidence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -74,8 +76,13 @@ class ProposalWriter:
                 proposal.apply_mode,
                 stable_hash(proposal.original_sentence),
                 stable_hash(proposal.suggested_sentence),
+                proposal.original_sentence,
+                proposal.suggested_sentence,
+                proposal.rationale,
+                json.dumps(proposal.source_urls, ensure_ascii=False),
                 proposal.status,
                 proposal.confidence,
+                utc_now_iso(),
                 utc_now_iso(),
             ),
         )

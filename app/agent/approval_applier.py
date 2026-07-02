@@ -46,8 +46,8 @@ class ApprovalApplier:
                     ),
                 )
                 self.db.update(
-                    "UPDATE proposals_cache SET status = '반영됨' WHERE notion_proposal_page_id = ?",
-                    (proposal.notion_page_id,),
+                    "UPDATE proposals_cache SET status = '반영됨', updated_at = ? WHERE notion_proposal_page_id = ?",
+                    (utc_now_iso(), proposal.notion_page_id),
                 )
                 result.applied += 1
             except Exception as exc:
@@ -58,8 +58,8 @@ class ApprovalApplier:
                     self.notion.update_proposal_status(user_id, proposal.notion_page_id, "반영 실패", message)
                 finally:
                     self.db.update(
-                        "UPDATE proposals_cache SET status = '반영 실패' WHERE notion_proposal_page_id = ?",
-                        (proposal.notion_page_id,),
+                        "UPDATE proposals_cache SET status = '반영 실패', updated_at = ? WHERE notion_proposal_page_id = ?",
+                        (utc_now_iso(), proposal.notion_page_id),
                     )
                     self.db.log(
                         "approval_apply_failed",

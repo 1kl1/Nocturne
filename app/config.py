@@ -12,6 +12,16 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     app_url: str
@@ -24,6 +34,9 @@ class Settings:
     openrouter_default_model: str
     openrouter_app_name: str
     openrouter_app_url: str
+    openrouter_web_search_enabled: bool
+    openrouter_web_search_engine: str
+    openrouter_web_search_max_results: int
     skip_external_validation: bool
     email_provider: str
     email_from: str
@@ -67,6 +80,9 @@ def get_settings() -> Settings:
         openrouter_default_model=os.getenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini"),
         openrouter_app_name=os.getenv("OPENROUTER_APP_NAME", "Nocturne"),
         openrouter_app_url=os.getenv("OPENROUTER_APP_URL", os.getenv("APP_URL", "http://localhost:8000")),
+        openrouter_web_search_enabled=_bool_env("OPENROUTER_WEB_SEARCH_ENABLED", False),
+        openrouter_web_search_engine=os.getenv("OPENROUTER_WEB_SEARCH_ENGINE", "").strip().lower(),
+        openrouter_web_search_max_results=max(1, min(10, _int_env("OPENROUTER_WEB_SEARCH_MAX_RESULTS", 5))),
         skip_external_validation=_bool_env("NOCTURNE_SKIP_EXTERNAL_VALIDATION", False),
         email_provider=os.getenv("EMAIL_PROVIDER", "smtp").lower(),
         email_from=os.getenv("EMAIL_FROM", "nocturne@example.com"),

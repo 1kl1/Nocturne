@@ -205,6 +205,66 @@ def notion_target_children(
     return JSONResponse({"items": items})
 
 
+@router.get("/api/knowledge-graph")
+def knowledge_graph(request: Request) -> JSONResponse:
+    db = request.app.state.db
+    user = db.default_user()
+    return JSONResponse(_knowledge_graph_payload(db, user["id"]))
+
+
+@router.post("/api/knowledge-graph/sync")
+def sync_knowledge_graph(request: Request) -> JSONResponse:
+    db = request.app.state.db
+    user = db.default_user()
+    try:
+        request.app.state.notion.sync_knowledge_graph(user["id"])
+    except Exception as exc:
+        payload = _knowledge_graph_payload(db, user["id"])
+        payload["detail"] = str(exc)
+        return JSONResponse(payload, status_code=400)
+    return JSONResponse(_knowledge_graph_payload(db, user["id"]))
+
+
+@router.post("/api/knowledge-graph/proposals/{proposal_id}/approve")
+def approve_graph_proposal(request: Request, proposal_id: int) -> JSONResponse:
+    db = request.app.state.db
+    user = db.default_user()
+    proposal = db.row(
+        """
+        SELECT * FROM proposals_cache
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (proposal_id, user["id"]),
+    )
+    if not proposal:
+        return JSONResponse({"detail": "제안을 찾지 못했습니다."}, status_code=404)
+    if proposal["status"] == "반영됨":
+        payload = _knowledge_graph_payload(db, user["id"])
+        payload["message"] = "이미 반영된 제안입니다."
+        return JSONResponse(payload)
+    notion_page_id = proposal["notion_proposal_page_id"]
+    if not notion_page_id:
+        return JSONResponse({"detail": "Notion 제안 페이지 ID가 없습니다."}, status_code=400)
+    try:
+        request.app.state.notion.update_proposal_status(user["id"], notion_page_id, "승인")
+        db.update(
+            "UPDATE proposals_cache SET status = '승인', updated_at = ? WHERE id = ? AND user_id = ?",
+            (utc_now_iso(), proposal_id, user["id"]),
+        )
+        applied, failed = request.app.state.harness.apply_approved_for_user(user["id"])
+        db.log(
+            "knowledge_graph_proposal_approved",
+            user_id=user["id"],
+            payload={"proposal_id": proposal_id, "notion_page_id": notion_page_id, "applied": applied, "failed": failed},
+        )
+    except Exception as exc:
+        return JSONResponse({"detail": f"제안 승인 실패: {exc}"}, status_code=400)
+    payload = _knowledge_graph_payload(db, user["id"])
+    payload["message"] = f"승인 반영 완료: 성공 {applied}건, 실패 {failed}건"
+    return JSONResponse(payload)
+
+
 @router.post("/targets")
 def add_target(
     request: Request,
@@ -405,7 +465,20 @@ def delete_local_data(request: Request) -> RedirectResponse:
     db = request.app.state.db
     user = db.default_user()
     with db.connection() as conn:
-        for table in ["connections", "scan_targets", "runs", "proposals_cache", "nocturne_edits", "email_verifications", "audit_logs", "notification_settings", "onboarding_progress"]:
+        for table in [
+            "connections",
+            "scan_targets",
+            "knowledge_graph_nodes",
+            "knowledge_graph_edges",
+            "knowledge_graph_syncs",
+            "runs",
+            "proposals_cache",
+            "nocturne_edits",
+            "email_verifications",
+            "audit_logs",
+            "notification_settings",
+            "onboarding_progress",
+        ]:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user["id"],))
         conn.execute("UPDATE users SET last_successful_scan_at = NULL, last_scheduled_run_date = NULL WHERE id = ?", (user["id"],))
         conn.commit()
@@ -484,6 +557,166 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
     )
     rows = list(applied_rows) + list(proposal_rows)
     return sorted(rows, key=lambda row: row["happened_at"] or "", reverse=True)[:60]
+
+
+def _knowledge_graph_payload(db: object, user_id: int) -> dict[str, object]:
+    node_rows = db.rows(
+        """
+        SELECT * FROM knowledge_graph_nodes
+        WHERE user_id = ?
+        ORDER BY object_type, title
+        """,
+        (user_id,),
+    )
+    edge_rows = db.rows(
+        """
+        SELECT * FROM knowledge_graph_edges
+        WHERE user_id = ?
+        ORDER BY relation_type, source_object_id, target_object_id
+        """,
+        (user_id,),
+    )
+    sync = db.row("SELECT * FROM knowledge_graph_syncs WHERE user_id = ?", (user_id,))
+    nodes: list[dict[str, object]] = []
+    links: list[dict[str, object]] = []
+    node_ids: set[str] = set()
+    for row in node_rows:
+        node_id = row["notion_object_id"]
+        node_ids.add(node_id)
+        is_database = row["object_type"] == "database"
+        nodes.append(
+            {
+                "id": node_id,
+                "objectId": node_id,
+                "type": row["object_type"],
+                "kind": "knowledge",
+                "name": row["title"] or "Untitled",
+                "url": row["url"] or "",
+                "parentId": row["parent_id"] or "",
+                "parentType": row["parent_type"] or "",
+                "lastEditedTime": row["last_edited_time"] or "",
+                "val": 4.8 if is_database else 3.6,
+                "color": "#7fb6ff" if is_database else "#b8c7d9",
+            }
+        )
+    for row in edge_rows:
+        source = row["source_object_id"]
+        target = row["target_object_id"]
+        if source not in node_ids or target not in node_ids:
+            continue
+        relation = row["relation_type"] or "link"
+        links.append(
+            {
+                "source": source,
+                "target": target,
+                "type": relation,
+                "name": relation.replace("_", " "),
+                "color": "rgba(160, 174, 192, 0.36)",
+            }
+        )
+
+    proposal_rows = db.rows(
+        """
+        SELECT
+            pc.*,
+            COALESCE(kgn.title, st.title, '') AS source_title
+        FROM proposals_cache pc
+        LEFT JOIN knowledge_graph_nodes kgn
+          ON kgn.user_id = pc.user_id AND kgn.notion_object_id = pc.source_page_id
+        LEFT JOIN scan_targets st
+          ON st.user_id = pc.user_id AND st.notion_object_id = pc.source_page_id
+        WHERE pc.user_id = ?
+          AND pc.status IN ('대기', '보류', '승인', '반영 실패')
+        ORDER BY COALESCE(pc.updated_at, pc.created_at) DESC
+        LIMIT 100
+        """,
+        (user_id,),
+    )
+    for row in proposal_rows:
+        source_id = row["source_page_id"]
+        if source_id not in node_ids:
+            node_ids.add(source_id)
+            nodes.append(
+                {
+                    "id": source_id,
+                    "objectId": source_id,
+                    "type": "page",
+                    "kind": "knowledge",
+                    "name": row["source_title"] or f"페이지 {source_id[-8:]}",
+                    "url": "",
+                    "val": 3.2,
+                    "color": "#9aa8bb",
+                }
+            )
+        proposal_node_id = f'proposal:{row["id"]}'
+        nodes.append(
+            {
+                "id": proposal_node_id,
+                "type": "proposal",
+                "kind": "proposal",
+                "name": _proposal_graph_title(row),
+                "proposalId": row["id"],
+                "sourcePageId": source_id,
+                "sourceTitle": row["source_title"] or "",
+                "notionProposalPageId": row["notion_proposal_page_id"] or "",
+                "issueType": row["issue_type"] or "",
+                "applyMode": row["apply_mode"] or "",
+                "status": row["status"] or "",
+                "confidence": float(row["confidence"] or 0),
+                "originalSentence": row["original_sentence"] or "",
+                "suggestedSentence": row["suggested_sentence"] or "",
+                "rationale": row["rationale"] or "",
+                "sourceUrls": _decode_string_list(row["source_urls"]),
+                "createdAt": row["created_at"] or "",
+                "val": 6.8,
+                "color": "#f06a4f",
+            }
+        )
+        links.append(
+            {
+                "source": source_id,
+                "target": proposal_node_id,
+                "type": "proposal",
+                "name": "agent proposal",
+                "color": "rgba(240, 106, 79, 0.78)",
+                "proposal": True,
+            }
+        )
+
+    return {
+        "nodes": nodes,
+        "links": links,
+        "meta": {
+            "nodeCount": len(nodes),
+            "knowledgeNodeCount": len(node_rows),
+            "linkCount": len(links),
+            "proposalCount": len(proposal_rows),
+            "lastSyncedAt": sync["last_synced_at"] if sync else None,
+            "syncStatus": sync["status"] if sync else "never",
+            "syncError": sync["error_message"] if sync else None,
+            "needsSync": not bool(node_rows) and bool(db.active_targets(user_id)),
+        },
+    }
+
+
+def _proposal_graph_title(row: object) -> str:
+    issue = ui.ISSUE_LABELS.get(row["issue_type"] or "", row["issue_type"] or "제안")
+    suggested = (row["suggested_sentence"] or "").strip()
+    if suggested:
+        return f"{issue}: {suggested[:72]}"
+    return f"{issue} 제안"
+
+
+def _decode_string_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [str(item) for item in decoded if str(item).strip()]
 
 
 def _make_state(user_id: int, secret: str, return_to: str) -> str:

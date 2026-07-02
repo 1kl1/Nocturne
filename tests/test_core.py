@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app import ui
 from app.agent.types import ProposalCandidate, TextBlock
@@ -11,6 +13,7 @@ from app.config import Settings
 from app.db import Database
 from app.security import SecretBox, stable_hash
 from app.services.notion_service import NotionService, replace_rich_text_sentence
+from app.services.openrouter_service import OpenRouterService
 from app.time_utils import utc_now_iso
 
 
@@ -26,6 +29,9 @@ def settings_for(path: Path) -> Settings:
         openrouter_default_model="openai/gpt-4.1-mini",
         openrouter_app_name="Nocturne",
         openrouter_app_url="http://localhost:8000",
+        openrouter_web_search_enabled=False,
+        openrouter_web_search_engine="",
+        openrouter_web_search_max_results=5,
         skip_external_validation=True,
         email_provider="console",
         email_from="nocturne@example.com",
@@ -102,6 +108,27 @@ class CoreTest(unittest.TestCase):
             )
             duplicate = ProposalValidator(db).validate(user["id"], [block], [proposal])
             self.assertEqual(duplicate.rejected[0][1], "중복 제안")
+
+    def test_database_creates_knowledge_graph_cache_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(settings_for(Path(tmp) / "nocturne.sqlite3"))
+            db.initialize()
+            tables = {
+                row["name"]
+                for row in db.rows(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type = 'table'
+                    """
+                )
+            }
+            proposal_columns = {row["name"] for row in db.rows("PRAGMA table_info(proposals_cache)")}
+
+            self.assertIn("knowledge_graph_nodes", tables)
+            self.assertIn("knowledge_graph_edges", tables)
+            self.assertIn("knowledge_graph_syncs", tables)
+            self.assertIn("suggested_sentence", proposal_columns)
+            self.assertIn("source_urls", proposal_columns)
 
     def test_replace_rich_text_sentence_preserves_surrounding_text(self) -> None:
         rich_text = [
@@ -228,6 +255,59 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(database_children[0]["title"], "DB Page")
             self.assertNotIn("/pages/parent-page", [call["path"] for call in calls])
 
+    def test_openrouter_web_search_plugin_is_added_when_enabled(self) -> None:
+        settings = Settings(
+            app_url="http://localhost:8000",
+            database_url="sqlite:///./data/nocturne.sqlite3",
+            encryption_key="test-secret",
+            notion_client_id="",
+            notion_client_secret="",
+            notion_redirect_uri="",
+            openrouter_api_key="test-openrouter-key",
+            openrouter_default_model="openai/gpt-4.1-mini",
+            openrouter_app_name="Nocturne",
+            openrouter_app_url="http://localhost:8000",
+            openrouter_web_search_enabled=True,
+            openrouter_web_search_engine="parallel",
+            openrouter_web_search_max_results=3,
+            skip_external_validation=True,
+            email_provider="console",
+            email_from="nocturne@example.com",
+            smtp_host="",
+            smtp_port=587,
+            smtp_username="",
+            smtp_password="",
+            web_search_provider="none",
+            web_search_api_key="",
+            scheduler_enabled=False,
+            default_user_email="test@example.com",
+        )
+        block = TextBlock(
+            page_id="page-1",
+            page_title="Page",
+            page_url="https://notion.so/page-1",
+            block_id="block-1",
+            block_type="paragraph",
+            plain_text="The product launched in 2024.",
+            rich_text=[],
+            parent_block_id=None,
+            heading_path=[],
+            last_edited_time=utc_now_iso(),
+        )
+        captured: dict[str, object] = {}
+
+        def fake_request_json(*args: object, **kwargs: object) -> SimpleNamespace:
+            captured["payload"] = kwargs["payload"]
+            return SimpleNamespace(data={"choices": [{"message": {"content": "[]"}}]})
+
+        with patch("app.services.openrouter_service.request_json", fake_request_json):
+            proposals = OpenRouterService(settings).analyze_blocks("test-openrouter-key", [block], {})
+
+        self.assertEqual(proposals, [])
+        payload = captured["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload["plugins"], [{"id": "web", "max_results": 3, "engine": "parallel"}])
+
     def test_onboarding_skips_scope_and_stages_email_flow(self) -> None:
         settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
         connection = {
@@ -300,8 +380,11 @@ class CoreTest(unittest.TestCase):
 
         self.assertIn("1건", html)
         self.assertIn("0건", html)
+        self.assertIn("data-knowledge-graph", html)
+        self.assertIn("knowledge-graph.js", html)
         self.assertIn("run-board-row", html)
         self.assertIn("Roadmap", html)
+        self.assertNotIn("page-head home-head", html)
         self.assertNotIn("다음 실행", html)
         self.assertNotIn("보완 필요 페이지", html)
         self.assertNotIn("승인 항목 반영", html)

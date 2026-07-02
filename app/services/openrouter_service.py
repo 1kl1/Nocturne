@@ -41,7 +41,7 @@ class OpenRouterService:
         if not blocks:
             return []
         prompt = self._prompt(blocks, search_results)
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.settings.openrouter_default_model,
             "messages": [
                 {
@@ -56,6 +56,14 @@ class OpenRouterService:
             ],
             "temperature": 0.1,
         }
+        if self.settings.openrouter_web_search_enabled:
+            plugin: dict[str, Any] = {
+                "id": "web",
+                "max_results": self.settings.openrouter_web_search_max_results,
+            }
+            if self.settings.openrouter_web_search_engine:
+                plugin["engine"] = self.settings.openrouter_web_search_engine
+            payload["plugins"] = [plugin]
         try:
             response = request_json(
                 "POST",
@@ -102,6 +110,9 @@ class OpenRouterService:
             ]
             for query, results in search_results.items()
         }
+        live_web_rule = ""
+        if self.settings.openrouter_web_search_enabled:
+            live_web_rule = "- OpenRouter 웹 검색 컨텍스트가 제공되면, 근거로 쓴 URL을 source_urls에 반드시 포함한다.\n"
         return (
             "다음 Notion 블록에서 사실 오류, 누락, 모순만 찾아라.\n"
             "출력은 JSON 배열만 허용한다. 스키마:\n"
@@ -113,6 +124,7 @@ class OpenRouterService:
             "- replace는 original_sentence가 해당 block plain_text에 정확히 포함되어야 한다.\n"
             "- append는 original_sentence를 추가 위치의 앵커 문장으로 둔다.\n"
             "- 사실 오류는 source_urls 또는 명확한 내부 근거가 있어야 한다.\n"
+            f"{live_web_rule}"
             "- 확신이 낮으면 confidence를 낮게 둔다.\n\n"
             f"BLOCKS:\n{json.dumps(block_lines, ensure_ascii=False)}\n\n"
             f"WEB_SEARCH_RESULTS:\n{json.dumps(sources, ensure_ascii=False)}"

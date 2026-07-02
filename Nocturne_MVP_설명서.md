@@ -741,6 +741,10 @@ NOTION_CLIENT_ID=
 NOTION_CLIENT_SECRET=
 NOTION_REDIRECT_URI=
 OPENROUTER_DEFAULT_MODEL=
+OPENROUTER_API_KEY=
+OPENROUTER_WEB_SEARCH_ENABLED=
+OPENROUTER_WEB_SEARCH_ENGINE=
+OPENROUTER_WEB_SEARCH_MAX_RESULTS=
 EMAIL_PROVIDER=
 EMAIL_FROM=
 EMAIL_API_KEY=
@@ -748,7 +752,7 @@ WEB_SEARCH_PROVIDER=
 WEB_SEARCH_API_KEY=
 ```
 
-사용자별 OpenRouter API 키와 Slack webhook URL은 환경변수가 아니라 web application 설정으로 입력받아 암호화 저장한다.
+OpenRouter API 키는 서버 환경변수로 관리하고, 사용자별 Notion 토큰과 알림 설정은 web application 설정으로 입력받아 암호화 저장한다.
 
 ---
 

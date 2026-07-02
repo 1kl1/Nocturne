@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702i"
+ASSET_VERSION = "20260702j"
 
 
 EVENT_LABELS = {
@@ -305,26 +305,59 @@ def dashboard(
     latest_run = runs[0] if runs else None
     timezone_name = settings["timezone"] or "Asia/Seoul"
     body = f"""
-<section class="page-head home-head">
-  <div>
-    <p class="eyebrow">최근 실행과 제안 내역</p>
-    <h1>홈</h1>
-  </div>
-  <div class="actions">
-    <form method="post" action="/runs/manual">
-      <input type="hidden" name="return_to" value="/dashboard">
-      <button class="primary" type="submit">수동 점검 실행</button>
-    </form>
-  </div>
-</section>
+{_knowledge_graph_view()}
 
 <section class="panel home-run-panel">
   <div class="panel-head"><h2>최근 실행</h2><a href="/runs">로그 보기</a></div>
   {_home_run_summary(latest_run, timezone_name)}
   {_run_item_board(run_items, timezone_name)}
 </section>
+<script src="https://cdn.jsdelivr.net/npm/force-graph/dist/force-graph.min.js"></script>
+<script src="/static/knowledge-graph.js?v={ASSET_VERSION}"></script>
 """
     return page("홈", body, "home", notice)
+
+
+def _knowledge_graph_view() -> str:
+    return """
+<section class="knowledge-graph-view" data-knowledge-graph>
+  <header class="graph-toolbar">
+    <div class="graph-title">
+      <p class="eyebrow">현재 지식</p>
+      <h1>지식 Graph</h1>
+    </div>
+    <dl class="graph-stats" aria-label="그래프 통계">
+      <div><dt>노드</dt><dd data-graph-node-count>0</dd></div>
+      <div><dt>연결</dt><dd data-graph-link-count>0</dd></div>
+      <div><dt>제안</dt><dd data-graph-proposal-count>0</dd></div>
+    </dl>
+    <div class="graph-actions">
+      <button type="button" data-graph-sync>동기화</button>
+      <button type="button" data-graph-fit>맞춤</button>
+      <form method="post" action="/runs/manual">
+        <input type="hidden" name="return_to" value="/dashboard">
+        <button class="primary" type="submit">점검</button>
+      </form>
+    </div>
+  </header>
+  <div class="graph-status-line">
+    <span class="graph-dot knowledge"></span><span>사용자 지식</span>
+    <span class="graph-dot database"></span><span>데이터베이스</span>
+    <span class="graph-dot proposal"></span><span>Agent 제안</span>
+    <strong data-graph-status>캐시 확인 중</strong>
+  </div>
+  <div class="graph-workspace">
+    <div class="graph-canvas" data-graph-canvas aria-label="현재 지식 그래프"></div>
+    <aside class="graph-inspector" data-graph-inspector>
+      <p class="graph-inspector-kicker" data-inspector-kicker>선택</p>
+      <h2 data-inspector-title>지식 Graph</h2>
+      <p data-inspector-body>캐시 대기</p>
+      <dl data-inspector-meta></dl>
+      <div class="graph-inspector-actions" data-inspector-actions></div>
+    </aside>
+  </div>
+</section>
+"""
 
 
 def _home_run_summary(run: sqlite3.Row | None, timezone_name: str) -> str:
