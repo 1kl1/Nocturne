@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702g"
+ASSET_VERSION = "20260702i"
 
 
 EVENT_LABELS = {
@@ -721,7 +721,18 @@ def notifications_page(settings: sqlite3.Row, connection: sqlite3.Row, notice: s
     return page("알림 설정", body, "notifications", notice)
 
 
-def runs_page(runs: list[sqlite3.Row], logs: list[sqlite3.Row], notice: str | None = None, timezone_name: str = "Asia/Seoul") -> str:
+def runs_page(
+    runs: list[sqlite3.Row],
+    logs: list[sqlite3.Row],
+    notice: str | None = None,
+    timezone_name: str = "Asia/Seoul",
+    selected_limit: int = 20,
+) -> str:
+    current_limit = selected_limit if selected_limit in {20, 50, 100} else 20
+    limit_options = "".join(
+        f'<option value="{limit}" {"selected" if limit == current_limit else ""}>최근 {limit}개</option>'
+        for limit in (20, 50, 100)
+    )
     run_rows = "".join(run_row(run, timezone_name) for run in runs) or '<tr><td colspan="7" class="empty">실행 기록이 없습니다.</td></tr>'
     log_rows = "".join(log_row(log, timezone_name) for log in logs) or '<tr><td colspan="3" class="empty">감사 로그가 없습니다.</td></tr>'
     body = f"""
@@ -731,15 +742,21 @@ def runs_page(runs: list[sqlite3.Row], logs: list[sqlite3.Row], notice: str | No
     <h1>실행 로그</h1>
   </div>
   <div class="actions">
+    <form class="limit-form" method="get" action="/runs">
+      <label>표시
+        <select name="limit">{limit_options}</select>
+      </label>
+      <button type="submit">보기</button>
+    </form>
     <form method="post" action="/runs/manual">
-      <input type="hidden" name="return_to" value="/runs">
+      <input type="hidden" name="return_to" value="/runs?limit={current_limit}">
       <button class="primary" type="submit">수동 점검 실행</button>
     </form>
   </div>
 </section>
 
 <section class="panel">
-  <div class="panel-head"><h2>최근 실행</h2></div>
+  <div class="panel-head"><h2>최근 실행</h2><span class="panel-count">최근 {current_limit}개</span></div>
   <div class="table-wrap">
     <table class="run-table">
       <thead><tr><th>Run</th><th>상태</th><th>시간</th><th>페이지</th><th>제안</th><th>반영</th><th>알림</th></tr></thead>
@@ -749,7 +766,7 @@ def runs_page(runs: list[sqlite3.Row], logs: list[sqlite3.Row], notice: str | No
 </section>
 
 <section class="panel">
-  <div class="panel-head"><h2>감사 로그</h2></div>
+  <div class="panel-head"><h2>감사 로그</h2><span class="panel-count">최근 {current_limit}개</span></div>
   <div class="table-wrap">
     <table class="audit-table">
       <thead><tr><th>시각</th><th>이벤트</th><th>내용</th></tr></thead>
@@ -776,7 +793,18 @@ def run_row(run: sqlite3.Row, timezone_name: str) -> str:
     page_detail = _count_group([("스캔", run["scanned_page_count"]), ("변경", run["changed_page_count"])])
     applied = int(run["applied_count"] or 0)
     failed = int(run["apply_failed_count"] or 0)
-    apply_html = f'<strong>{applied}</strong><small>실패 {failed}</small>' if failed else f'<strong>{applied}</strong><small>실패 없음</small>'
+    agent_errors = _run_agent_error_count(run)
+    failure_parts = []
+    if failed:
+        failure_parts.append(f"반영 실패 {failed}건")
+    if agent_errors:
+        failure_parts.append(f"점검 오류 {agent_errors}건")
+    if failure_parts:
+        error_title = _run_error_title(run)
+        title_attr = f' title="{_escape(error_title)}"' if error_title else ""
+        apply_html = f'<strong>{applied}건</strong><small class="run-error-text"{title_attr}>{" · ".join(failure_parts)}</small>'
+    else:
+        apply_html = f'<strong>{applied}건</strong><small>실패 없음</small>'
     return f"""
 <tr>
   <td class="run-id-cell"><code title="{_escape(run_id)}">{_escape(_short_run_id(run_id))}</code></td>
@@ -853,6 +881,33 @@ def _count_group(items: list[tuple[str, object]]) -> str:
             continue
         parts.append(f"<span><b>{_escape(label)}</b>{count}</span>")
     return f'<div class="count-group">{"".join(parts) or "<span><b>-</b>0</span>"}</div>'
+
+
+def _run_agent_error_count(run: sqlite3.Row) -> int:
+    logged_errors = _coerce_int(_optional_row_value(run, "agent_error_count", 0))
+    message = str(run["error_message"] or "").strip()
+    message_errors = len([line for line in message.splitlines() if line.strip()])
+    if logged_errors or message_errors:
+        return max(logged_errors, message_errors)
+    return 1 if (run["status"] or "") == "failed" else 0
+
+
+def _run_error_title(run: sqlite3.Row) -> str:
+    message = str(run["error_message"] or "").strip()
+    if message:
+        return _truncate(message, 240)
+    if (run["status"] or "") == "failed":
+        return "Agent 실행 중 오류가 발생했습니다."
+    return ""
+
+
+def _optional_row_value(row: object, key: str, default: object = None) -> object:
+    try:
+        return row[key]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
 
 
 def _coerce_int(value: object) -> int:

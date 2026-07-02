@@ -306,6 +306,35 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("보완 필요 페이지", html)
         self.assertNotIn("승인 항목 반영", html)
 
+    def test_runs_page_limit_selector_and_agent_error_summary(self) -> None:
+        run = {
+            "run_id": "run_20260702_abcdef12",
+            "status": "partial_success",
+            "started_at": utc_now_iso(),
+            "finished_at": utc_now_iso(),
+            "scanned_page_count": 2,
+            "changed_page_count": 1,
+            "proposal_count": 0,
+            "error_count": 0,
+            "omission_count": 0,
+            "contradiction_count": 0,
+            "held_count": 0,
+            "applied_count": 0,
+            "apply_failed_count": 0,
+            "agent_error_count": 1,
+            "error_message": "Roadmap: OpenRouter 호출 실패",
+            "notification_status": "sent",
+        }
+
+        html = ui.runs_page([run], [], timezone_name="Asia/Seoul", selected_limit=100)
+
+        self.assertIn('name="limit"', html)
+        self.assertIn('<option value="100" selected>최근 100개</option>', html)
+        self.assertIn('/runs?limit=100', html)
+        self.assertIn("0건", html)
+        self.assertIn("점검 오류 1건", html)
+        self.assertNotIn("실패 없음", html)
+
     def test_settings_switches_one_section_and_nav_uses_icons(self) -> None:
         settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
         connection = {

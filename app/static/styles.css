@@ -899,6 +899,22 @@ button:hover,
   flex-wrap: wrap;
 }
 
+.limit-form {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.limit-form label {
+  min-width: 128px;
+}
+
+.panel-count {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
 .table-wrap {
   width: 100%;
   overflow-x: auto;
@@ -938,6 +954,11 @@ td small {
   margin-top: 3px;
   max-width: 280px;
   overflow-wrap: anywhere;
+}
+
+.run-error-text {
+  color: #8f2525;
+  font-weight: 800;
 }
 
 code {

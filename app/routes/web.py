@@ -308,13 +308,50 @@ def update_notifications(
 
 
 @router.get("/runs", response_class=HTMLResponse)
-def runs(request: Request, notice: str | None = None) -> str:
+def runs(request: Request, notice: str | None = None, limit: int = Query(20)) -> str:
     db = request.app.state.db
     user = db.default_user()
-    run_rows = db.rows("SELECT * FROM runs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (user["id"],))
-    logs = db.rows("SELECT * FROM audit_logs WHERE user_id IS NULL OR user_id = ? ORDER BY created_at DESC LIMIT 80", (user["id"],))
+    selected_limit = limit if limit in {20, 50, 100} else 20
+    run_rows = db.rows(
+        """
+        SELECT
+            r.*,
+            COALESCE(
+                (
+                    SELECT COUNT(*)
+                    FROM audit_logs l
+                    WHERE l.run_id = r.run_id
+                      AND (
+                        l.event IN (
+                            'approval_apply_failed',
+                            'page_scan_failed',
+                            'proposal_write_failed',
+                            'run_failed',
+                            'target_expand_failed'
+                        )
+                        OR (l.event = 'agent_tool_call' AND l.level IN ('warning', 'error'))
+                      )
+                ),
+                0
+            ) AS agent_error_count
+        FROM runs r
+        WHERE r.user_id = ?
+        ORDER BY r.created_at DESC
+        LIMIT ?
+        """,
+        (user["id"], selected_limit),
+    )
+    logs = db.rows(
+        """
+        SELECT * FROM audit_logs
+        WHERE user_id IS NULL OR user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user["id"], selected_limit),
+    )
     settings = db.notification_settings_for_user(user["id"])
-    return ui.runs_page(run_rows, logs, notice, settings["timezone"])
+    return ui.runs_page(run_rows, logs, notice, settings["timezone"], selected_limit)
 
 
 @router.post("/runs/manual")
