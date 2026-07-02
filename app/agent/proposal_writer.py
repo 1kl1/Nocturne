@@ -64,7 +64,7 @@ class ProposalWriter:
                 (user_id, run_id, notion_proposal_page_id, source_page_id, block_id, issue_type,
                  apply_mode, original_sentence_hash, suggested_sentence_hash, original_sentence,
                  suggested_sentence, rationale, source_urls, status, confidence, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,

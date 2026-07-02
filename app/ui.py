@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702k"
+ASSET_VERSION = "20260702m"
 
 
 EVENT_LABELS = {
@@ -338,14 +338,20 @@ def _knowledge_graph_view() -> str:
     <span class="graph-dot knowledge"></span><span>사용자 지식</span>
     <span class="graph-dot database"></span><span>데이터베이스</span>
     <span class="graph-dot proposal"></span><span>Agent 제안</span>
-    <strong data-graph-status>캐시 확인 중</strong>
+    <strong data-graph-status>Graph 확인 중</strong>
   </div>
   <div class="graph-workspace">
-    <div class="graph-canvas" data-graph-canvas aria-label="현재 지식 그래프"></div>
+    <div class="graph-canvas" data-graph-canvas aria-label="현재 지식 그래프">
+      <div class="graph-empty-state" data-graph-empty-state hidden>
+        <span class="graph-empty-spinner" aria-hidden="true"></span>
+        <strong data-graph-empty-title>Graph 만드는 중</strong>
+        <small data-graph-empty-body>Notion 구조를 읽고 있습니다.</small>
+      </div>
+    </div>
     <aside class="graph-inspector" data-graph-inspector>
       <p class="graph-inspector-kicker" data-inspector-kicker>선택</p>
       <h2 data-inspector-title>지식 Graph</h2>
-      <p data-inspector-body>캐시 대기</p>
+      <p data-inspector-body>워크스페이스 기준으로 Graph를 구성합니다.</p>
       <dl data-inspector-meta></dl>
       <div class="graph-inspector-actions" data-inspector-actions></div>
     </aside>
@@ -778,9 +784,8 @@ def runs_page(
     </button>
     <form class="limit-form" method="get" action="/runs">
       <label>표시
-        <select name="limit">{limit_options}</select>
+        <select name="limit" data-runs-limit>{limit_options}</select>
       </label>
-      <button type="submit">보기</button>
     </form>
     <form method="post" action="/runs/manual">
       <input type="hidden" name="return_to" value="/runs?limit={current_limit}">
@@ -790,7 +795,7 @@ def runs_page(
 </section>
 
 <section class="panel">
-  <div class="panel-head"><h2>최근 실행</h2><span class="panel-count">최근 {current_limit}개</span></div>
+  <div class="panel-head"><h2>최근 실행</h2><span class="panel-count" data-runs-panel-count>최근 {current_limit}개</span></div>
   <div class="table-wrap">
     <table class="run-table">
       <thead><tr><th>Run</th><th>상태</th><th>시간</th><th>페이지</th><th>제안</th><th>반영</th><th>알림</th></tr></thead>
@@ -800,7 +805,7 @@ def runs_page(
 </section>
 
 <section class="panel">
-  <div class="panel-head"><h2>감사 로그</h2><span class="panel-count">최근 {current_limit}개</span></div>
+  <div class="panel-head"><h2>감사 로그</h2><span class="panel-count" data-runs-panel-count>최근 {current_limit}개</span></div>
   <div class="table-wrap">
     <table class="audit-table">
       <thead><tr><th>시각</th><th>이벤트</th><th>내용</th></tr></thead>
@@ -808,6 +813,20 @@ def runs_page(
     </table>
   </div>
 </section>
+<dialog class="run-error-dialog" data-run-error-dialog aria-labelledby="run-error-title">
+  <div class="run-error-dialog-box">
+    <header>
+      <div>
+        <p class="eyebrow">점검 오류</p>
+        <h2 id="run-error-title" data-run-error-title>오류 상세</h2>
+      </div>
+      <button class="icon-button" type="button" data-run-error-close aria-label="닫기" title="닫기">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </header>
+    <div class="run-error-dialog-body" data-run-error-body></div>
+  </div>
+</dialog>
 </div>
 """
     return page("로그", body, "logs", notice)
@@ -837,11 +856,15 @@ def run_row(run: sqlite3.Row, timezone_name: str) -> str:
     if failure_parts:
         error_title = _run_error_title(run)
         title_attr = f' title="{_escape(error_title)}"' if error_title else ""
-        apply_html = f'<strong>{applied}건</strong><small class="run-error-text"{title_attr}>{" · ".join(failure_parts)}</small>'
+        apply_html = (
+            f'<strong>{applied}건</strong>'
+            f'<button class="run-error-trigger" type="button" data-run-error-run-id="{_escape(run_id)}"{title_attr}>'
+            f'{" · ".join(failure_parts)}</button>'
+        )
     else:
         apply_html = f'<strong>{applied}건</strong><small>실패 없음</small>'
     return f"""
-<tr>
+<tr data-run-key="{_escape(run_id)}">
   <td class="run-id-cell"><code title="{_escape(run_id)}">{_escape(_short_run_id(run_id))}</code></td>
   <td>{_status_badge(status)}</td>
   <td>{_time_range(run["started_at"], run["finished_at"], timezone_name)}</td>
@@ -856,13 +879,29 @@ def run_row(run: sqlite3.Row, timezone_name: str) -> str:
 def log_row(log: sqlite3.Row, timezone_name: str) -> str:
     event = log["event"] or ""
     level = log["level"] or "info"
+    summary = _payload_summary(log["payload"])
+    detail_html = _log_summary_html(log, event, level, summary)
     return f"""
-<tr>
+<tr data-log-key="{_escape(_optional_row_value(log, "id", ""))}">
   <td>{_datetime_html(log["created_at"], timezone_name)}</td>
   <td class="event-cell">{_event_badge(event, level)}<small>{_escape(event)}</small></td>
-  <td class="log-summary">{_escape(_payload_summary(log["payload"]))}</td>
+  <td class="log-summary">{detail_html}</td>
 </tr>
 """
+
+
+def _log_summary_html(log: sqlite3.Row, event: str, level: str, summary: str) -> str:
+    if not _is_error_log_event(event, level):
+        return _escape(summary)
+    payload = str(log["payload"] or "")
+    return (
+        f'<button class="log-error-trigger" type="button"'
+        f' data-error-event="{_escape(event)}"'
+        f' data-error-title="{_escape(EVENT_LABELS.get(event, event.replace("_", " ") if event else "오류"))}"'
+        f' data-error-detail="{_escape(summary)}"'
+        f' data-error-payload="{_escape(_truncate(payload, 900))}">'
+        f'{_escape(summary)}</button>'
+    )
 
 
 def _status_badge(status: str) -> str:
@@ -873,6 +912,16 @@ def _status_badge(status: str) -> str:
 def _event_badge(event: str, level: str) -> str:
     label = EVENT_LABELS.get(event, event.replace("_", " ") if event else "-")
     return f'<span class="event-badge level-{_escape(level or "info")}">{_escape(label)}</span>'
+
+
+def _is_error_log_event(event: str, level: str) -> bool:
+    return event in {
+        "approval_apply_failed",
+        "page_scan_failed",
+        "proposal_write_failed",
+        "run_failed",
+        "target_expand_failed",
+    } or level in {"warning", "error"}
 
 
 def _datetime_html(value: str | None, timezone_name: str) -> str:

@@ -337,6 +337,56 @@ h2 {
   display: block;
 }
 
+.graph-empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: #dce6f3;
+  pointer-events: none;
+  text-align: center;
+  z-index: 2;
+}
+
+.graph-empty-state[hidden] {
+  display: none;
+}
+
+.graph-empty-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #c8ff49;
+  border-radius: 999px;
+  animation: graph-spin 760ms linear infinite;
+}
+
+.graph-empty-state strong,
+.graph-empty-state small {
+  display: block;
+}
+
+.graph-empty-state strong {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 840;
+}
+
+.graph-empty-state small {
+  color: #aeb9c8;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+@keyframes graph-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .graph-inspector {
   min-width: 0;
   padding: 16px;
@@ -1241,6 +1291,25 @@ button:hover,
   color: var(--red);
 }
 
+.icon-button {
+  width: 34px;
+  min-height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  padding: 0;
+}
+
+.icon-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
 .actions {
   display: flex;
   gap: 10px;
@@ -1305,9 +1374,42 @@ td small {
   overflow-wrap: anywhere;
 }
 
-.run-error-text {
+.run-error-text,
+.run-error-trigger,
+.log-error-trigger {
   color: #8f2525;
   font-weight: 800;
+}
+
+.run-error-trigger,
+.log-error-trigger {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.run-error-trigger {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.log-error-trigger {
+  max-width: 560px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.run-error-trigger:hover,
+.log-error-trigger:hover {
+  background: transparent;
+  color: #651717;
 }
 
 code {
@@ -1443,6 +1545,79 @@ time small,
 
 .runs-refresh-button.is-refreshing svg {
   animation: runs-spin 700ms linear infinite;
+}
+
+.run-error-dialog {
+  width: min(640px, calc(100vw - 32px));
+  border: 1px solid #111;
+  border-radius: 8px;
+  padding: 0;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 8px 8px 0 #050505;
+}
+
+.run-error-dialog::backdrop {
+  background: rgba(12, 16, 14, 0.42);
+}
+
+.run-error-dialog-box {
+  display: grid;
+  gap: 0;
+}
+
+.run-error-dialog header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  padding: 16px;
+}
+
+.run-error-dialog h2 {
+  font-size: 19px;
+}
+
+.run-error-dialog-body {
+  max-height: min(520px, 70vh);
+  overflow: auto;
+  padding: 4px 16px 16px;
+}
+
+.run-error-dialog-body dl {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.run-error-dialog-body dl div {
+  display: grid;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.run-error-dialog-body dl div:last-child {
+  border-bottom: 0;
+}
+
+.run-error-dialog-body dt,
+.run-error-dialog-body dd {
+  margin: 0;
+}
+
+.run-error-dialog-body dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.run-error-dialog-body dd {
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .stagger-row {

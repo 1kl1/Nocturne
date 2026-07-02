@@ -396,6 +396,60 @@ def runs_api(request: Request, limit: int = Query(20)) -> JSONResponse:
     )
 
 
+@router.get("/api/runs/{run_id}/errors")
+def run_errors_api(request: Request, run_id: str) -> JSONResponse:
+    db = request.app.state.db
+    user = db.default_user()
+    run = db.row(
+        """
+        SELECT * FROM runs
+        WHERE user_id = ? AND run_id = ?
+        LIMIT 1
+        """,
+        (user["id"], run_id),
+    )
+    if not run:
+        return JSONResponse({"detail": "실행 기록을 찾지 못했습니다."}, status_code=404)
+    logs = db.rows(
+        """
+        SELECT * FROM audit_logs
+        WHERE (user_id IS NULL OR user_id = ?)
+          AND run_id = ?
+          AND (
+            event IN (
+                'approval_apply_failed',
+                'page_scan_failed',
+                'proposal_write_failed',
+                'run_failed',
+                'target_expand_failed'
+            )
+            OR (event = 'agent_tool_call' AND level IN ('warning', 'error'))
+          )
+        ORDER BY created_at DESC
+        LIMIT 30
+        """,
+        (user["id"], run_id),
+    )
+    return JSONResponse(
+        {
+            "runId": run_id,
+            "status": run["status"] or "",
+            "errorMessage": run["error_message"] or "",
+            "items": [
+                {
+                    "event": log["event"] or "",
+                    "label": ui.EVENT_LABELS.get(log["event"] or "", (log["event"] or "").replace("_", " ")),
+                    "level": log["level"] or "info",
+                    "createdAt": log["created_at"] or "",
+                    "summary": ui._payload_summary(log["payload"]),
+                    "payload": log["payload"] or "",
+                }
+                for log in logs
+            ],
+        }
+    )
+
+
 @router.post("/runs/manual")
 def manual_run(request: Request, background_tasks: BackgroundTasks, return_to: str = Form("")) -> RedirectResponse:
     user = request.app.state.db.default_user()
@@ -589,6 +643,7 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
 
 def _knowledge_graph_payload(db: object, user_id: int) -> dict[str, object]:
     active_targets = db.active_targets(user_id)
+    connection = db.connection_for_user(user_id)
     node_rows = db.rows(
         """
         SELECT * FROM knowledge_graph_nodes
@@ -725,6 +780,8 @@ def _knowledge_graph_payload(db: object, user_id: int) -> dict[str, object]:
             "syncError": sync["error_message"] if sync else None,
             "hasTargets": bool(active_targets),
             "needsSync": bool(active_targets) and (not bool(node_rows) or sync is None or sync["status"] == "failed"),
+            "workspaceId": connection["notion_workspace_id"] or "",
+            "workspaceName": connection["notion_workspace_name"] or "",
         },
     }
 

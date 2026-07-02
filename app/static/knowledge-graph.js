@@ -4,6 +4,9 @@
 
   const canvas = root.querySelector("[data-graph-canvas]");
   const statusEl = root.querySelector("[data-graph-status]");
+  const emptyStateEl = root.querySelector("[data-graph-empty-state]");
+  const emptyTitleEl = root.querySelector("[data-graph-empty-title]");
+  const emptyBodyEl = root.querySelector("[data-graph-empty-body]");
   const nodeCountEl = root.querySelector("[data-graph-node-count]");
   const linkCountEl = root.querySelector("[data-graph-link-count]");
   const proposalCountEl = root.querySelector("[data-graph-proposal-count]");
@@ -86,6 +89,9 @@
         state.fitOnEngineStop = false;
         fitGraph({ duration: 240, padding: 76 });
       });
+    if (emptyStateEl && !emptyStateEl.isConnected) {
+      canvas.appendChild(emptyStateEl);
+    }
     state.graph.d3Force("charge").strength(-72);
     state.graph.d3Force("link").distance(function (link) {
       return link.proposal ? 84 : 48;
@@ -173,7 +179,13 @@
     if (state.syncing) return;
     const quiet = options && options.quiet;
     state.syncing = true;
-    if (!quiet) setStatus("Notion 동기화 중");
+    const buildingGraph = isGraphUnbuilt();
+    if (buildingGraph) {
+      setStatus("Graph 만드는 중");
+      setEmptyState(true, "Graph 만드는 중", "Notion 구조를 읽고 있습니다.");
+    } else if (!quiet) {
+      setStatus("Notion 동기화 중");
+    }
     try {
       const response = await fetch("/api/knowledge-graph/sync", { method: "POST" });
       const data = await response.json();
@@ -184,6 +196,7 @@
       setStatus(error.message || "동기화 실패");
     } finally {
       state.syncing = false;
+      updateEmptyState();
     }
   }
 
@@ -197,7 +210,7 @@
       renderData(data);
       setStatus(data.message || "반영 완료");
       state.selected = null;
-      renderInspector(null);
+      renderDefaultInspector();
     } catch (error) {
       setStatus(error.message || "승인 실패");
     }
@@ -209,7 +222,8 @@
     linkCountEl.textContent = String(state.data.meta.linkCount || state.data.links.length);
     proposalCountEl.textContent = String(state.data.meta.proposalCount || 0);
     if (!options || !options.fromCache) writeCache(state.data);
-    setStatus(options && options.fromCache ? "로컬 캐시" : syncStatusText(state.data.meta));
+    setStatus(options && options.fromCache ? "로컬 Graph" : syncStatusText(state.data.meta));
+    updateEmptyState();
     if (state.graph) {
       resizeGraph();
       state.graph.graphData({ nodes: state.data.nodes, links: state.data.links });
@@ -221,7 +235,7 @@
       });
       selectNode(selected || null, { keepView: true });
     } else {
-      renderInspector(null);
+      renderDefaultInspector();
     }
   }
 
@@ -244,9 +258,7 @@
     clearElement(inspector.meta);
     clearElement(inspector.actions);
     if (!node) {
-      inspector.kicker.textContent = "선택";
-      inspector.title.textContent = "지식 Graph";
-      inspector.body.textContent = "캐시 대기";
+      renderDefaultInspector();
       return;
     }
     if (node.kind === "proposal") {
@@ -289,6 +301,24 @@
       link.textContent = "Notion";
       inspector.actions.appendChild(link);
     }
+  }
+
+  function renderDefaultInspector() {
+    clearElement(inspector.meta);
+    clearElement(inspector.actions);
+    const meta = state.data.meta || {};
+    const workspaceName = meta.workspaceName || meta.workspaceId || "";
+    if (workspaceName) {
+      inspector.kicker.textContent = "워크스페이스";
+      inspector.title.textContent = workspaceName;
+      inspector.body.textContent = "이 Notion workspace를 기준으로 Graph를 구성합니다.";
+      if (meta.workspaceId) appendMeta("Workspace ID", trim(meta.workspaceId, 32));
+      if (meta.knowledgeNodeCount) appendMeta("지식 노드", `${meta.knowledgeNodeCount}개`);
+      return;
+    }
+    inspector.kicker.textContent = "워크스페이스";
+    inspector.title.textContent = "Notion workspace";
+    inspector.body.textContent = "Notion을 연결하고 점검 대상을 추가하면 Graph를 구성합니다.";
   }
 
   function appendMeta(label, value) {
@@ -358,13 +388,37 @@
     return shouldSync;
   }
 
+  function isGraphUnbuilt() {
+    return Boolean(state.data.meta && state.data.meta.hasTargets && state.data.meta.needsSync && !state.data.nodes.length);
+  }
+
+  function updateEmptyState() {
+    if (state.syncing && isGraphUnbuilt()) {
+      setStatus("Graph 만드는 중");
+      setEmptyState(true, "Graph 만드는 중", "Notion 구조를 읽고 있습니다.");
+      return;
+    }
+    if (isGraphUnbuilt()) {
+      setEmptyState(true, "Graph 생성 대기", "곧 Notion 구조를 읽어옵니다.");
+      return;
+    }
+    setEmptyState(false);
+  }
+
+  function setEmptyState(visible, title, body) {
+    if (!emptyStateEl) return;
+    emptyStateEl.hidden = !visible;
+    if (emptyTitleEl && title) emptyTitleEl.textContent = title;
+    if (emptyBodyEl && body) emptyBodyEl.textContent = body;
+  }
+
   function syncStatusText(meta) {
-    if (!meta) return "캐시";
+    if (!meta) return "Graph 준비";
     if (meta.syncStatus === "never") return "동기화 대기";
     if (meta.syncStatus === "partial_success") return "부분 동기화";
     if (meta.syncStatus === "failed") return "동기화 실패";
     if (meta.lastSyncedAt) return "동기화됨";
-    return "캐시";
+    return "Graph 준비";
   }
 
   function setStatus(message) {

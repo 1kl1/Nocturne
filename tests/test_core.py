@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app import ui
 from app.agent.harness import AgentHarness
+from app.agent.proposal_writer import ProposalWriter
 from app.agent.types import ProposalCandidate, TextBlock
 from app.agent.validator import ProposalValidator
 from app.config import Settings
@@ -130,6 +131,30 @@ class CoreTest(unittest.TestCase):
             self.assertIn("knowledge_graph_syncs", tables)
             self.assertIn("suggested_sentence", proposal_columns)
             self.assertIn("source_urls", proposal_columns)
+
+    def test_proposal_writer_cache_matches_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(settings_for(Path(tmp) / "nocturne.sqlite3"))
+            db.initialize()
+            user = db.default_user()
+            proposal = ProposalCandidate(
+                issue_type="error",
+                source_page_id="page-1",
+                block_id="block-1",
+                original_sentence="Old sentence.",
+                suggested_sentence="New sentence.",
+                apply_mode="replace",
+                rationale="Verified.",
+                source_urls=["https://example.com"],
+                confidence=0.87,
+            )
+
+            ProposalWriter(db, SimpleNamespace())._cache(user["id"], "run-1", "proposal-page-1", proposal)
+
+            row = db.row("SELECT * FROM proposals_cache WHERE user_id = ? AND run_id = ?", (user["id"], "run-1"))
+            self.assertIsNotNone(row)
+            self.assertEqual(row["notion_proposal_page_id"], "proposal-page-1")
+            self.assertEqual(row["suggested_sentence"], "New sentence.")
 
     def test_replace_rich_text_sentence_preserves_surrounding_text(self) -> None:
         rich_text = [
@@ -383,6 +408,10 @@ class CoreTest(unittest.TestCase):
         self.assertIn("0건", html)
         self.assertIn("data-knowledge-graph", html)
         self.assertIn("knowledge-graph.js", html)
+        self.assertIn("data-graph-empty-state", html)
+        self.assertIn("Graph 만드는 중", html)
+        self.assertIn("워크스페이스 기준", html)
+        self.assertNotIn("캐시 대기", html)
         self.assertNotIn("data-graph-sync", html)
         self.assertNotIn("data-graph-fit", html)
         self.assertNotIn('value="/dashboard"', html)
@@ -420,7 +449,12 @@ class CoreTest(unittest.TestCase):
         self.assertIn('/runs?limit=100', html)
         self.assertIn("data-runs-live", html)
         self.assertIn("data-runs-refresh", html)
+        self.assertIn("data-runs-limit", html)
+        self.assertIn("data-run-key", html)
+        self.assertIn("data-run-error-dialog", html)
+        self.assertIn("data-run-error-run-id", html)
         self.assertIn("runs.js", html)
+        self.assertNotIn(">보기</button>", html)
         self.assertIn("0건", html)
         self.assertIn("점검 오류 1건", html)
         self.assertNotIn("실패 없음", html)
