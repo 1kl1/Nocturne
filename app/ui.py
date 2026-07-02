@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260701h"
+ASSET_VERSION = "20260702c"
 
 
 EVENT_LABELS = {
@@ -131,28 +131,24 @@ def onboarding_page(
     step: int = 0,
 ) -> str:
     notion_connected = bool(connection["notion_access_token_encrypted"])
-    openrouter_connected = True
     email_connected = bool(connection["notification_email_verified"])
-    channels_connected = email_connected
+    email_pending = bool(connection["notification_email"]) and not email_connected
     has_targets = bool(targets)
     max_allowed = 0
     if notion_connected:
-        max_allowed = 1
-    if notion_connected and review_acknowledged:
-        max_allowed = 2
-    if notion_connected and review_acknowledged and openrouter_connected:
+        max_allowed = 2 if has_targets else 1
+    if notion_connected and has_targets and email_connected:
         max_allowed = 3
-    if notion_connected and review_acknowledged and openrouter_connected and has_targets:
-        max_allowed = 4
-    if notion_connected and review_acknowledged and openrouter_connected and has_targets and channels_connected:
-        max_allowed = 5
-    setup_score = max_allowed
-    safe_step = max(0, min(step, max_allowed, 5))
+    safe_step = max(0, min(step, max_allowed, 3))
+    if has_targets and safe_step == 1:
+        safe_step = 2
     notice_html = f'<div class="tutorial-notice">{_escape(notice)}</div>' if notice else ""
     target_rows = "".join(
         f'<li><strong>{_escape(target["title"])}</strong><span>{_escape(target["notion_object_type"])} · {"하위 포함" if target["include_children"] else "단일 대상"}</span></li>'
         for target in targets[:4]
     ) or "<li><strong>아직 비어 있음</strong><span>첫 점검 범위를 추가하면 여기에 남습니다.</span></li>"
+    skipped_steps = "1" if has_targets else ""
+    email_flow = _onboarding_email_flow(connection, settings, email_pending, email_connected)
     back_button = """
 <button class="icon-back" type="button" data-prev aria-label="이전 단계">
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
@@ -168,10 +164,9 @@ def onboarding_page(
   <link rel="stylesheet" href="/static/styles.css?v={ASSET_VERSION}">
 </head>
 <body class="tutorial-body">
-  <main class="tutorial" data-start-step="{safe_step}" data-max-step="{max_allowed}">
+  <main class="tutorial" data-start-step="{safe_step}" data-max-step="{max_allowed}" data-skip-steps="{_escape(skipped_steps)}">
     <header class="tutorial-head">
       <a class="tutorial-brand" href="/"><img src="/static/nocturne-icon.svg" alt=""><span>Nocturne</span></a>
-      <div class="tutorial-score"><strong>{setup_score}/5</strong><span>setup tasks</span></div>
     </header>
 
     {notice_html}
@@ -181,11 +176,9 @@ def onboarding_page(
           <p class="kicker">01 · workspace</p>
           <h1>먼저 Notion 작업실을 연결합니다.</h1>
           <p class="step-lede">Nocturne은 사용자가 허용한 Notion 범위 안에서만 시작합니다.</p>
-          <div class="connection-hero">
-            <div>
-              <span>Notion</span>
-              <strong>{_escape(connection["notion_workspace_name"] or connection["notion_workspace_id"] or "연결 대기")}</strong>
-            </div>
+          <div class="setup-line">
+            <span>Notion</span>
+            <strong>{_escape(connection["notion_workspace_name"] or connection["notion_workspace_id"] or "연결 대기")}</strong>
             {status_pill(notion_connected)}
           </div>
           <div class="step-actions">
@@ -195,44 +188,11 @@ def onboarding_page(
 
         <article class="onboarding-step" data-step="1">
           {back_button}
-          <p class="kicker">02 · review boundary</p>
-          <h1>수정은 수정함에서 한번 멈춥니다.</h1>
-          <p class="step-lede">agent는 원문을 바로 건드리지 않고 Nocturne 수정함에 위치, 근거, 제안문을 모아 둡니다.</p>
-          <div class="tutorial-board">
-            <div><span>대기</span><strong>새 제안 검토</strong></div>
-            <div><span>승인</span><strong>다음 실행에서 반영</strong></div>
-            <div><span>거절/보류</span><strong>원문 유지</strong></div>
-          </div>
-          <form class="step-actions" method="post" action="/onboarding/review-boundary">
-            <button class="primary ink-button task-button" type="submit">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>
-              <span>승인 경계 확인</span>
-            </button>
-          </form>
-        </article>
-
-        <article class="onboarding-step" data-step="2">
-          {back_button}
-          <p class="kicker">03 · model</p>
-          <h1>판단 모델은 서비스 설정을 사용합니다.</h1>
-          <p class="step-lede">OpenRouter API 키는 서버 환경변수로 관리합니다.</p>
-          <div class="connection-hero">
-            <div>
-              <span>OpenRouter</span>
-              <strong>서비스 기본 키</strong>
-            </div>
-            {status_pill(openrouter_connected)}
-          </div>
-          <button class="primary ink-button" type="button" data-next>계속</button>
-        </article>
-
-        <article class="onboarding-step" data-step="3">
-          {back_button}
-          <p class="kicker">04 · scope</p>
+          <p class="kicker">02 · scope</p>
           <h1>처음 점검할 페이지를 정합니다.</h1>
           <p class="step-lede">선택한 페이지의 하위 페이지는 기본으로 포함하고 데이터베이스의 페이지도 점검 범위에 넣습니다.</p>
           <form class="onboarding-form compact-form target-picker-form" method="post" action="/targets" data-target-form>
-            <input type="hidden" name="return_to" value="/onboarding?step=4">
+            <input type="hidden" name="return_to" value="/onboarding?step=2">
             {target_picker_fields()}
             <label class="checkline">
               <input type="checkbox" name="include_children" checked>
@@ -243,48 +203,23 @@ def onboarding_page(
           <ul class="target-chip-list">{target_rows}</ul>
         </article>
 
-        <article class="onboarding-step" data-step="4">
+        <article class="onboarding-step" data-step="2">
           {back_button}
-          <p class="kicker">05 · morning brief</p>
+          <p class="kicker">03 · morning brief</p>
           <h1>아침 알림은 이메일로 받습니다.</h1>
           <p class="step-lede">SMTP 발송 설정은 서버 환경변수로 관리하고, 사용자는 받을 이메일만 인증합니다.</p>
-          <div class="email-stack">
-            <form class="onboarding-form" method="post" action="/settings/email">
-              <input type="hidden" name="return_to" value="/onboarding?step=4">
-              <label>이메일
-                <input name="email" type="email" value="{_escape(connection["notification_email"] or "")}" placeholder="me@example.com">
-              </label>
-              <button type="submit">코드 받기</button>
-            </form>
-            <form class="onboarding-form inline-form" method="post" action="/settings/email/verify">
-              <input type="hidden" name="return_to" value="/onboarding?step=5">
-              <label>인증 코드
-                <input name="code" inputmode="numeric" placeholder="000000">
-              </label>
-              <button type="submit">확인</button>
-            </form>
-          </div>
-          <form class="time-strip" method="post" action="/notifications">
-            <input type="hidden" name="return_to" value="/onboarding?step=5">
-            <input type="hidden" name="default_channel" value="email">
-            <label>점검 <input type="time" name="scan_time" value="{_escape(settings["scan_time"])}"></label>
-            <label>알림 <input type="time" name="notify_time" value="{_escape(settings["notify_time"])}"></label>
-            <label>타임존 <input name="timezone" value="{_escape(settings["timezone"])}"></label>
-            <label class="checkline"><input type="checkbox" name="notify_zero" checked><span>0건 알림</span></label>
-            <button type="submit">시간 저장</button>
-          </form>
+          {email_flow}
         </article>
 
-        <article class="onboarding-step" data-step="5">
+        <article class="onboarding-step" data-step="3">
           {back_button}
-          <p class="kicker">06 · launch</p>
+          <p class="kicker">04 · launch</p>
           <h1>밤의 점검 루프를 켭니다.</h1>
           <p class="step-lede">첫 실행에서는 기준선을 잡으려고 선택 범위 전체를 읽습니다.</p>
-          <div class="launch-grid">
+          <div class="setup-checklist">
             <div>{status_pill(notion_connected)}<strong>Notion</strong></div>
-            <div>{status_pill(openrouter_connected)}<strong>OpenRouter</strong></div>
             <div>{status_pill(has_targets)}<strong>점검 대상</strong></div>
-            <div>{status_pill(channels_connected)}<strong>이메일</strong></div>
+            <div>{status_pill(email_connected)}<strong>이메일</strong></div>
           </div>
           <div class="step-actions">
             <form method="post" action="/runs/manual"><button class="primary ink-button" type="submit">첫 점검 실행</button></form>
@@ -298,6 +233,55 @@ def onboarding_page(
 </body>
 </html>"""
     return body
+
+
+def _onboarding_email_flow(
+    connection: sqlite3.Row,
+    settings: sqlite3.Row,
+    email_pending: bool,
+    email_connected: bool,
+) -> str:
+    if email_connected:
+        return f"""
+<div class="setup-line">
+  <span>이메일</span>
+  <strong>{_escape(connection["notification_email"] or "인증됨")}</strong>
+  {status_pill(True)}
+</div>
+<form class="onboarding-form time-strip" method="post" action="/notifications">
+  <input type="hidden" name="return_to" value="/onboarding?step=3">
+  <input type="hidden" name="default_channel" value="email">
+  <label>점검 <input type="time" name="scan_time" value="{_escape(settings["scan_time"])}"></label>
+  <label>알림 <input type="time" name="notify_time" value="{_escape(settings["notify_time"])}"></label>
+  <label>타임존 <input name="timezone" value="{_escape(settings["timezone"])}"></label>
+  <label class="checkline"><input type="checkbox" name="notify_zero" checked><span>0건 알림</span></label>
+  <button class="primary ink-button" type="submit">시간 저장하고 계속</button>
+</form>
+"""
+
+    verify_form = ""
+    if email_pending:
+        verify_form = f"""
+<form class="onboarding-form inline-form" method="post" action="/settings/email/verify">
+  <input type="hidden" name="return_to" value="/onboarding?step=2">
+  <label>인증 코드
+    <input name="code" inputmode="numeric" placeholder="000000">
+  </label>
+  <button type="submit">확인</button>
+</form>
+<p class="setup-note">{_escape(connection["notification_email"])} 주소로 보낸 코드를 입력하면 시간 설정이 열립니다.</p>
+"""
+
+    return f"""
+<form class="onboarding-form inline-form" method="post" action="/settings/email">
+  <input type="hidden" name="return_to" value="/onboarding?step=2">
+  <label>이메일
+    <input name="email" type="email" value="{_escape(connection["notification_email"] or "")}" placeholder="me@example.com">
+  </label>
+  <button type="submit">코드 받기</button>
+</form>
+{verify_form}
+"""
 
 
 def dashboard(

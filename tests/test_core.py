@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app import ui
 from app.agent.types import ProposalCandidate, TextBlock
 from app.agent.validator import ProposalValidator
 from app.config import Settings
@@ -138,6 +139,17 @@ class CoreTest(unittest.TestCase):
 
             def fake_request(user_id: int, method: str, path: str, payload: object = None, retries: int = 2) -> dict:
                 calls.append({"user_id": user_id, "method": method, "path": path, "payload": payload})
+                if path == "/pages/parent-page":
+                    return {
+                        "object": "page",
+                        "id": "parent-page",
+                        "properties": {
+                            "Name": {
+                                "type": "title",
+                                "title": [{"plain_text": "Parent Hub"}],
+                            }
+                        },
+                    }
                 return {
                     "results": [
                         {
@@ -145,6 +157,7 @@ class CoreTest(unittest.TestCase):
                             "id": "page-1",
                             "url": "https://notion.so/page-1",
                             "last_edited_time": "2026-07-01T00:00:00.000Z",
+                            "parent": {"type": "page_id", "page_id": "parent-page"},
                             "properties": {
                                 "Name": {
                                     "type": "title",
@@ -157,6 +170,7 @@ class CoreTest(unittest.TestCase):
                             "id": "db-1",
                             "url": "https://notion.so/db-1",
                             "last_edited_time": "2026-06-30T00:00:00.000Z",
+                            "parent": {"type": "workspace", "workspace": True},
                             "title": [{"plain_text": "Knowledge Base"}],
                         },
                         {"object": "block", "id": "block-1"},
@@ -166,15 +180,53 @@ class CoreTest(unittest.TestCase):
             service._request = fake_request  # type: ignore[method-assign]
             all_results = service.search_selectable_objects(user["id"], query="Roadmap", limit=10)
             page_results = service.search_selectable_objects(user["id"], object_type="page", limit=80)
+            search_calls = [call for call in calls if call["path"] == "/search"]
 
-            self.assertEqual(calls[0]["path"], "/search")
-            self.assertEqual(calls[0]["payload"]["query"], "Roadmap")
-            self.assertNotIn("filter", calls[0]["payload"])
+            self.assertEqual(search_calls[0]["payload"]["query"], "Roadmap")
+            self.assertNotIn("filter", search_calls[0]["payload"])
             self.assertEqual(all_results[0]["title"], "Roadmap")
+            self.assertEqual(all_results[0]["parent_type"], "page")
+            self.assertEqual(all_results[0]["parent_title"], "Parent Hub")
             self.assertEqual(all_results[1]["title"], "Knowledge Base")
-            self.assertEqual(calls[1]["payload"]["page_size"], 50)
-            self.assertEqual(calls[1]["payload"]["filter"], {"value": "page", "property": "object"})
+            self.assertEqual(all_results[1]["parent_type"], "workspace")
+            self.assertEqual(search_calls[1]["payload"]["page_size"], 50)
+            self.assertEqual(search_calls[1]["payload"]["filter"], {"value": "page", "property": "object"})
             self.assertEqual([result["object_type"] for result in page_results], ["page"])
+
+    def test_onboarding_skips_scope_and_stages_email_flow(self) -> None:
+        settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
+        connection = {
+            "notion_access_token_encrypted": "token",
+            "notion_workspace_name": "My Life",
+            "notion_workspace_id": "workspace-1",
+            "notification_email": "",
+            "notification_email_verified": 0,
+        }
+        target = {
+            "title": "PS 문제풀이",
+            "notion_object_type": "page",
+            "include_children": 1,
+        }
+
+        html = ui.onboarding_page(connection, settings, [target], False, step=1)
+        self.assertIn('data-start-step="2"', html)
+        self.assertIn('data-skip-steps="1"', html)
+        self.assertNotIn("setup tasks", html)
+        self.assertNotIn("승인 경계 확인", html)
+        self.assertNotIn("OpenRouter", html)
+        self.assertIn('name="email"', html)
+        self.assertNotIn('name="code"', html)
+        self.assertNotIn("시간 저장하고 계속", html)
+
+        pending = {**connection, "notification_email": "me@example.com"}
+        pending_html = ui.onboarding_page(pending, settings, [target], False, step=2)
+        self.assertIn('name="code"', pending_html)
+        self.assertNotIn("시간 저장하고 계속", pending_html)
+
+        verified = {**pending, "notification_email_verified": 1}
+        verified_html = ui.onboarding_page(verified, settings, [target], False, step=2)
+        self.assertIn("시간 저장하고 계속", verified_html)
+        self.assertNotIn('placeholder="000000"', verified_html)
 
 
 if __name__ == "__main__":

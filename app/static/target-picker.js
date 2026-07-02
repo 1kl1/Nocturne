@@ -45,7 +45,7 @@
     field(form, "url").value = "";
     selection.hidden = true;
     selection.replaceChildren();
-    picker.querySelectorAll(".target-result-card").forEach((card) => {
+    picker.querySelectorAll(".target-tree-row").forEach((card) => {
       card.classList.remove("selected");
       card.setAttribute("aria-pressed", "false");
     });
@@ -71,7 +71,7 @@
     selection.replaceChildren(label, title, meta);
     selection.hidden = false;
 
-    picker.querySelectorAll(".target-result-card").forEach((card) => {
+    picker.querySelectorAll(".target-tree-row").forEach((card) => {
       const selected = card.dataset.objectId === item.object_id;
       card.classList.toggle("selected", selected);
       card.setAttribute("aria-pressed", selected ? "true" : "false");
@@ -79,12 +79,86 @@
     setStatus(picker, "", "");
   }
 
-  function resultCard(picker, item) {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "target-result-card";
-    card.dataset.objectId = item.object_id || "";
-    card.setAttribute("aria-pressed", "false");
+  function parentLabel(item) {
+    if (!item.parent_title) {
+      return item.parent_type === "workspace" ? "워크스페이스" : "";
+    }
+    return item.parent_title;
+  }
+
+  function groupLabel(type) {
+    if (type === "database") {
+      return "상위 데이터베이스";
+    }
+    if (type === "page") {
+      return "상위 페이지";
+    }
+    if (type === "block") {
+      return "상위 블록";
+    }
+    return "워크스페이스";
+  }
+
+  function buildTree(items) {
+    const itemMap = new Map();
+    const childMap = new Map();
+    const groupMap = new Map();
+    const roots = [];
+
+    items.forEach((item) => {
+      itemMap.set(item.object_id, item);
+      childMap.set(item.object_id, []);
+    });
+
+    items.forEach((item) => {
+      if (item.parent_id && itemMap.has(item.parent_id)) {
+        childMap.get(item.parent_id).push(item);
+        return;
+      }
+      if (item.parent_id && item.parent_type && item.parent_type !== "workspace") {
+        const groupKey = `${item.parent_type}:${item.parent_id}`;
+        if (!groupMap.has(groupKey)) {
+          const group = {
+            virtual: true,
+            key: groupKey,
+            title: item.parent_title || groupLabel(item.parent_type),
+            object_type: item.parent_type,
+            children: [],
+          };
+          groupMap.set(groupKey, group);
+          roots.push(group);
+        }
+        groupMap.get(groupKey).children.push(item);
+        return;
+      }
+      roots.push(item);
+    });
+
+    return { roots, childMap };
+  }
+
+  function treeGroup(group, level) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "target-tree-group";
+    wrapper.style.setProperty("--depth", String(level));
+
+    const title = document.createElement("strong");
+    title.textContent = group.title || groupLabel(group.object_type);
+
+    const meta = document.createElement("span");
+    meta.textContent = groupLabel(group.object_type);
+
+    wrapper.replaceChildren(title, meta);
+    return wrapper;
+  }
+
+  function treeRow(picker, item, level) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "target-tree-row";
+    row.dataset.objectId = item.object_id || "";
+    row.style.setProperty("--depth", String(level));
+    row.setAttribute("aria-pressed", "false");
 
     const title = document.createElement("strong");
     title.textContent = item.title || "Untitled";
@@ -93,12 +167,23 @@
     const edited = formatEdited(item.last_edited_time);
     meta.textContent = [labels[item.object_type] || item.object_type, edited].filter(Boolean).join(" · ");
 
-    const id = document.createElement("small");
-    id.textContent = item.object_id || "";
+    const parent = document.createElement("small");
+    parent.textContent = parentLabel(item);
 
-    card.replaceChildren(title, meta, id);
-    card.addEventListener("click", () => selectItem(picker, item));
-    return card;
+    row.replaceChildren(title, meta, parent);
+    row.addEventListener("click", () => selectItem(picker, item));
+    return row;
+  }
+
+  function appendNode(fragment, picker, node, level, childMap) {
+    if (node.virtual) {
+      fragment.appendChild(treeGroup(node, level));
+      node.children.forEach((child) => appendNode(fragment, picker, child, level + 1, childMap));
+      return;
+    }
+    fragment.appendChild(treeRow(picker, node, level));
+    const children = childMap.get(node.object_id) || [];
+    children.forEach((child) => appendNode(fragment, picker, child, level + 1, childMap));
   }
 
   function renderResults(picker, items) {
@@ -112,9 +197,10 @@
       return;
     }
     const fragment = document.createDocumentFragment();
-    items.forEach((item) => fragment.appendChild(resultCard(picker, item)));
+    const tree = buildTree(items);
+    tree.roots.forEach((node) => appendNode(fragment, picker, node, 0, tree.childMap));
     results.appendChild(fragment);
-    setStatus(picker, `${items.length}개 대상을 불러왔습니다.`, "ok");
+    setStatus(picker, `${items.length}개 대상을 계층형으로 불러왔습니다.`, "ok");
   }
 
   async function loadTargets(picker) {

@@ -199,8 +199,9 @@ class NotionService:
             payload["filter"] = {"value": requested_type, "property": "object"}
         data = self._request(user_id, "POST", "/search", payload)
         results: list[dict[str, str]] = []
+        parent_cache: dict[tuple[str, str], str] = {}
         for item in data.get("results", []):
-            result = self._selectable_object(item)
+            result = self._selectable_object(user_id, item, parent_cache)
             if not result:
                 continue
             if requested_type and result["object_type"] != requested_type:
@@ -297,7 +298,12 @@ class NotionService:
             source_target_id=source_target_id,
         )
 
-    def _selectable_object(self, item: dict[str, Any]) -> dict[str, str] | None:
+    def _selectable_object(
+        self,
+        user_id: int,
+        item: dict[str, Any],
+        parent_cache: dict[tuple[str, str], str],
+    ) -> dict[str, str] | None:
         object_type = item.get("object")
         object_id = str(item.get("id") or "")
         if not object_id or object_type not in {"page", "database"}:
@@ -306,13 +312,69 @@ class NotionService:
             title = self._title_from_page(item)
         else:
             title = _database_title(item)
+        parent = self._parent_context(user_id, item.get("parent") or {}, parent_cache)
         return {
             "object_id": object_id,
             "object_type": object_type,
             "title": title,
             "url": str(item.get("url") or ""),
             "last_edited_time": str(item.get("last_edited_time") or ""),
+            **parent,
         }
+
+    def _parent_context(
+        self,
+        user_id: int,
+        parent: dict[str, Any],
+        parent_cache: dict[tuple[str, str], str],
+    ) -> dict[str, str]:
+        parent_type = str(parent.get("type") or "")
+        if parent_type == "page_id":
+            parent_id = str(parent.get("page_id") or "")
+            return {
+                "parent_id": parent_id,
+                "parent_type": "page",
+                "parent_title": self._parent_title(user_id, "page", parent_id, parent_cache),
+            }
+        if parent_type == "database_id":
+            parent_id = str(parent.get("database_id") or "")
+            return {
+                "parent_id": parent_id,
+                "parent_type": "database",
+                "parent_title": self._parent_title(user_id, "database", parent_id, parent_cache),
+            }
+        if parent_type == "block_id":
+            return {
+                "parent_id": str(parent.get("block_id") or ""),
+                "parent_type": "block",
+                "parent_title": "상위 블록",
+            }
+        if parent_type == "workspace":
+            return {"parent_id": "", "parent_type": "workspace", "parent_title": "워크스페이스"}
+        return {"parent_id": "", "parent_type": "", "parent_title": ""}
+
+    def _parent_title(
+        self,
+        user_id: int,
+        parent_type: str,
+        parent_id: str,
+        parent_cache: dict[tuple[str, str], str],
+    ) -> str:
+        if not parent_id:
+            return "상위 항목"
+        cache_key = (parent_type, parent_id)
+        if cache_key in parent_cache:
+            return parent_cache[cache_key]
+        fallback = "상위 페이지" if parent_type == "page" else "상위 데이터베이스"
+        try:
+            if parent_type == "page":
+                title = self._title_from_page(self.retrieve_page(user_id, parent_id))
+            else:
+                title = _database_title(self.retrieve_database(user_id, parent_id))
+        except Exception:
+            title = fallback
+        parent_cache[cache_key] = title
+        return title
 
     def fetch_text_blocks(self, user_id: int, page: PageCandidate) -> list[TextBlock]:
         blocks: list[TextBlock] = []

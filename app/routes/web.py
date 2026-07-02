@@ -74,7 +74,8 @@ def onboarding(request: Request, notice: str | None = None, step: int = 0) -> st
     targets = db.active_targets(user["id"])
     review_acknowledged = _progress_done(db, user["id"], "review_boundary")
     allowed_step = _allowed_onboarding_step(connection, targets, review_acknowledged)
-    if step > allowed_step:
+    requested_step = allowed_step if "step" not in request.query_params else step
+    if requested_step > allowed_step:
         return ui.onboarding_page(
             connection,
             db.notification_settings_for_user(user["id"]),
@@ -89,7 +90,7 @@ def onboarding(request: Request, notice: str | None = None, step: int = 0) -> st
         targets,
         review_acknowledged,
         notice,
-        step,
+        requested_step,
     )
 
 
@@ -435,10 +436,8 @@ def _allowed_onboarding_step(connection: object, targets: list[object], review_a
     channel = bool(connection["notification_email_verified"])
     if not notion:
         return 0
-    if not review_acknowledged:
-        return 1
     if not targets:
-        return 3
+        return 1
     if not channel:
-        return 4
-    return 5
+        return 2
+    return 3

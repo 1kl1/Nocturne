@@ -10,17 +10,35 @@
   const dots = Array.from(activeRoot.querySelectorAll("[data-step-target]"));
   const max = steps.length - 1;
   const maxAllowed = Number(activeRoot.dataset.maxStep || String(max));
+  const skipped = new Set(
+    String(activeRoot.dataset.skipSteps || "")
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value))
+  );
+
+  function normalize(index, direction) {
+    let next = Math.max(0, Math.min(max, maxAllowed, index));
+    const stepDirection = direction || 1;
+    while (skipped.has(next) && next > 0 && next < maxAllowed) {
+      next += stepDirection >= 0 ? 1 : -1;
+    }
+    if (skipped.has(next)) {
+      next = stepDirection >= 0 ? Math.min(maxAllowed, next + 1) : Math.max(0, next - 1);
+    }
+    return Math.max(0, Math.min(max, maxAllowed, next));
+  }
 
   function readStep() {
     const params = new URLSearchParams(window.location.search);
     const fromQuery = Number(params.get("step"));
     const fromData = Number(activeRoot.dataset.startStep || "0");
     const value = Number.isFinite(fromQuery) ? fromQuery : fromData;
-    return Math.max(0, Math.min(max, maxAllowed, value));
+    return normalize(value, 1);
   }
 
-  function show(index, push) {
-    const next = Math.max(0, Math.min(max, maxAllowed, index));
+  function show(index, push, direction) {
+    const next = normalize(index, direction);
     activeRoot.dataset.currentStep = String(next);
     steps.forEach((step) => {
       const active = Number(step.dataset.step) === next;
@@ -49,15 +67,15 @@
     }
     const current = Number(activeRoot.dataset.currentStep || "0");
     if (target.hasAttribute("data-step-target")) {
-      show(Number(target.dataset.stepTarget), true);
+      show(Number(target.dataset.stepTarget), true, Number(target.dataset.stepTarget) >= current ? 1 : -1);
       return;
     }
     if (target.hasAttribute("data-next")) {
-      show(current + 1, true);
+      show(current + 1, true, 1);
       return;
     }
     if (target.hasAttribute("data-prev")) {
-      show(current - 1, true);
+      show(current - 1, true, -1);
     }
   });
 
@@ -67,10 +85,10 @@
     }
     const current = Number(activeRoot.dataset.currentStep || "0");
     if (event.key === "ArrowRight") {
-      show(current, true);
+      show(current + 1, true, 1);
     }
     if (event.key === "ArrowLeft") {
-      show(current - 1, true);
+      show(current - 1, true, -1);
     }
   });
 
