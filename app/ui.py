@@ -3,13 +3,13 @@ from __future__ import annotations
 import html
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702e"
+ASSET_VERSION = "20260702f"
 
 
 EVENT_LABELS = {
@@ -47,6 +47,11 @@ ISSUE_LABELS = {
     "error": "오류",
     "omission": "누락",
     "contradiction": "모순",
+}
+
+APPLY_LABELS = {
+    "replace": "교체",
+    "append": "추가",
 }
 
 
@@ -284,21 +289,15 @@ def dashboard(
     settings: sqlite3.Row,
     targets: list[sqlite3.Row],
     runs: list[sqlite3.Row],
-    improvements: list[sqlite3.Row],
+    run_items: list[sqlite3.Row],
     notice: str | None = None,
 ) -> str:
     latest_run = runs[0] if runs else None
     timezone_name = settings["timezone"] or "Asia/Seoul"
-    inbox_url = connection["notion_inbox_url"] or ""
-    inbox_action = (
-        f'<a class="button" href="{_escape(inbox_url)}" target="_blank" rel="noreferrer">수정사항 확인</a>'
-        if inbox_url
-        else '<a class="button" href="/settings#account">수정함 연결 확인</a>'
-    )
     body = f"""
 <section class="page-head home-head">
   <div>
-    <p class="eyebrow">오늘 확인할 수정사항</p>
+    <p class="eyebrow">최근 실행과 제안 내역</p>
     <h1>홈</h1>
   </div>
   <div class="actions">
@@ -306,30 +305,13 @@ def dashboard(
       <input type="hidden" name="return_to" value="/dashboard">
       <button class="primary" type="submit">수동 점검 실행</button>
     </form>
-    <form method="post" action="/apply-approved">
-      <input type="hidden" name="return_to" value="/dashboard">
-      <button type="submit">승인 항목 반영</button>
-    </form>
   </div>
 </section>
 
-<section class="home-grid">
-  <div class="panel home-card">
-    <div class="panel-head"><h2>최근 실행</h2><a href="/runs">로그 보기</a></div>
-    {_home_run_summary(latest_run, timezone_name)}
-  </div>
-  <div class="panel home-card">
-    <div class="panel-head"><h2>다음 실행</h2><a href="/settings#notifications">시간 설정</a></div>
-    {_next_schedule_summary(settings)}
-  </div>
-</section>
-
-<section class="panel improvement-panel">
-  <div class="panel-head">
-    <h2>보완 필요 페이지</h2>
-    <div class="actions">{inbox_action}</div>
-  </div>
-  {_improvement_list(improvements, inbox_url, timezone_name)}
+<section class="panel home-run-panel">
+  <div class="panel-head"><h2>최근 실행</h2><a href="/runs">로그 보기</a></div>
+  {_home_run_summary(latest_run, timezone_name)}
+  {_run_item_board(run_items, timezone_name)}
 </section>
 """
     return page("홈", body, "home", notice)
@@ -338,146 +320,117 @@ def dashboard(
 def _home_run_summary(run: sqlite3.Row | None, timezone_name: str) -> str:
     if not run:
         return '<p class="empty">아직 실행 기록이 없습니다.</p>'
-    finished = _datetime_html(run["finished_at"] or run["started_at"], timezone_name)
+    event_time = run["finished_at"] or run["started_at"] or run["created_at"]
+    duration = _run_duration_text(run["started_at"], run["finished_at"])
     return f"""
-<div class="home-summary">
-  <div>
-    <span>상태</span>
+<div class="run-overview">
+  <div class="run-status-line">
+    <span>현재 상태</span>
     {_status_badge(run["status"] or "")}
   </div>
-  <div>
-    <span>실행 시각</span>
-    {finished}
-  </div>
-  <div>
-    <span>제안</span>
-    <strong>{_escape(run["proposal_count"])}</strong>
-  </div>
-  <div>
-    <span>반영</span>
-    <strong>{_escape(run["applied_count"])}</strong><small>실패 {_escape(run["apply_failed_count"])}</small>
-  </div>
+  <dl class="run-facts">
+    <div><dt>시각</dt><dd>{_relative_time_html(event_time, timezone_name)}<small>{_escape(duration)}</small></dd></div>
+    <div><dt>제안</dt><dd>{_count_text(run["proposal_count"])}</dd></div>
+    <div><dt>반영</dt><dd>{_count_text(run["applied_count"])}</dd></div>
+    <div><dt>실패</dt><dd>{_count_text(run["apply_failed_count"])}</dd></div>
+  </dl>
 </div>
 """
 
 
-def _next_schedule_summary(settings: sqlite3.Row) -> str:
-    timezone_name = settings["timezone"] or "Asia/Seoul"
-    scan = _next_scheduled_time(settings["scan_time"], timezone_name)
-    notify = _next_scheduled_time(settings["notify_time"], timezone_name)
+def _run_item_board(rows: list[sqlite3.Row], timezone_name: str) -> str:
+    if not rows:
+        return """
+<div class="run-board-empty">
+  <strong>표시할 제안/반영 항목이 없습니다.</strong>
+  <span>최근 실행에서 새 항목이 생기면 이곳에 게시됩니다.</span>
+</div>
+"""
     return f"""
-<div class="home-summary">
-  <div>
-    <span>다음 점검</span>
-    {_scheduled_time_html(scan)}
+<div class="run-board" role="list">
+  <div class="run-board-head">
+    <span>구분</span>
+    <span>페이지</span>
+    <span>내용</span>
+    <span>상태</span>
+    <span>시각</span>
   </div>
-  <div>
-    <span>아침 알림</span>
-    {_scheduled_time_html(notify)}
-  </div>
-  <div>
-    <span>타임존</span>
-    <strong>{_escape(timezone_name)}</strong>
-  </div>
+  {"".join(_run_item_row(row, timezone_name) for row in rows)}
 </div>
 """
 
 
-def _next_scheduled_time(time_value: str | None, timezone_name: str) -> datetime | None:
-    if not time_value:
-        return None
-    try:
-        hour_text, minute_text = time_value.split(":", 1)
-        hour = int(hour_text)
-        minute = int(minute_text)
-    except (ValueError, AttributeError):
-        return None
+def _run_item_row(row: sqlite3.Row, timezone_name: str) -> str:
+    kind = row["item_kind"] or "proposal"
+    kind_label = "반영" if kind == "applied" else "제안"
+    page_id = row["source_page_id"] or ""
+    title = row["source_title"] or f"페이지 {_short_page_id(page_id)}"
+    issue = ISSUE_LABELS.get(row["issue_type"] or "", row["issue_type"] or "항목")
+    apply = APPLY_LABELS.get(row["apply_mode"] or "", row["apply_mode"] or "")
+    detail = " · ".join(part for part in [issue, apply] if part)
+    status = row["status"] or ("반영됨" if kind == "applied" else "-")
+    href = _notion_page_url(row["notion_proposal_page_id"]) or _notion_page_url(page_id)
+    tag_cls = "applied" if kind == "applied" else "proposal"
+    inner = f"""
+  <span class="run-item-kind {tag_cls}">{_escape(kind_label)}</span>
+  <span class="run-item-title"><strong>{_escape(title)}</strong><small>{_escape(_short_page_id(page_id))}</small></span>
+  <span class="run-item-detail">{_escape(detail)}</span>
+  <span class="run-item-status">{_escape(status)}</span>
+  <span class="run-item-time">{_relative_time_html(row["happened_at"], timezone_name)}</span>
+"""
+    if href:
+        return f'<a class="run-board-row" role="listitem" href="{_escape(href)}" target="_blank" rel="noreferrer">{inner}</a>'
+    return f'<div class="run-board-row" role="listitem">{inner}</div>'
+
+
+def _count_text(value: object) -> str:
+    return f"{_coerce_int(value)}건"
+
+
+def _run_duration_text(started_at: str | None, finished_at: str | None) -> str:
+    start = parse_iso(started_at)
+    finish = parse_iso(finished_at)
+    if not start:
+        return ""
+    if not finish:
+        return "진행 중"
+    seconds = max(0, int((finish - start).total_seconds()))
+    if seconds >= 3600:
+        return f"{seconds // 3600}시간 {(seconds % 3600) // 60}분"
+    if seconds >= 60:
+        return f"{seconds // 60}분 {seconds % 60}초"
+    return f"{seconds}초"
+
+
+def _relative_time_html(value: str | None, timezone_name: str) -> str:
+    parsed = parse_iso(value)
+    if not parsed:
+        return '<span class="muted">-</span>'
     try:
         tz = ZoneInfo(timezone_name)
     except Exception:
         tz = timezone.utc
+    local = parsed.astimezone(tz)
     now = datetime.now(tz)
-    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if candidate <= now:
-        candidate += timedelta(days=1)
-    return candidate
+    seconds = int((local - now).total_seconds())
+    label = _relative_time_label(seconds)
+    title = local.strftime("%Y.%m.%d %H:%M")
+    return f'<time datetime="{_escape(value or parsed.isoformat())}" title="{_escape(title)}">{_escape(label)}</time>'
 
 
-def _scheduled_time_html(value: datetime | None) -> str:
-    if value is None:
-        return '<span class="muted">-</span>'
-    return (
-        f'<time datetime="{_escape(value.isoformat())}">'
-        f'<strong>{_escape(value.strftime("%m.%d"))}</strong>'
-        f'<small>{_escape(value.strftime("%H:%M"))}</small>'
-        "</time>"
-    )
-
-
-def _improvement_list(rows: list[sqlite3.Row], inbox_url: str, timezone_name: str) -> str:
-    if not rows:
-        return """
-<div class="empty-state">
-  <strong>확인할 수정사항이 없습니다.</strong>
-  <span>다음 점검 후 보완이 필요한 페이지가 이곳에 모입니다.</span>
-</div>
-"""
-    return f'<div class="improvement-list">{"".join(_improvement_item(row, inbox_url, timezone_name) for row in rows)}</div>'
-
-
-def _improvement_item(row: sqlite3.Row, inbox_url: str, timezone_name: str) -> str:
-    page_id = row["source_page_id"] or ""
-    title = row["source_title"] or f"페이지 {_short_page_id(page_id)}"
-    proposal_url = _notion_page_url(row["notion_proposal_page_id"]) or inbox_url
-    review_link = (
-        f'<a class="button" href="{_escape(proposal_url)}" target="_blank" rel="noreferrer">확인</a>'
-        if proposal_url
-        else '<a class="button" href="/settings#account">수정함 연결</a>'
-    )
-    apply_action = ""
-    if _coerce_int(row["approved_count"]):
-        apply_action = """
-<form method="post" action="/apply-approved">
-  <input type="hidden" name="return_to" value="/dashboard">
-  <button class="primary" type="submit">반영</button>
-</form>
-"""
-    return f"""
-<article class="improvement-item">
-  <div>
-    <strong>{_escape(title)}</strong>
-    <small>{_escape(_short_page_id(page_id))}</small>
-  </div>
-  <div class="improvement-time"><span>최근 제안</span>{_datetime_html(row["latest_created_at"], timezone_name)}</div>
-  <div class="issue-strip">{_issue_counts(row)}</div>
-  <div class="proposal-state">{_proposal_state(row)}</div>
-  <div class="actions">{review_link}{apply_action}</div>
-</article>
-"""
-
-
-def _issue_counts(row: sqlite3.Row) -> str:
-    parts = []
-    for key, label in [("error_count", "오류"), ("omission_count", "누락"), ("contradiction_count", "모순")]:
-        count = _coerce_int(row[key])
-        if count:
-            parts.append(f"<span>{_escape(label)} {_escape(count)}</span>")
-    return "".join(parts) or "<span>제안 없음</span>"
-
-
-def _proposal_state(row: sqlite3.Row) -> str:
-    pending = _coerce_int(row["pending_count"])
-    approved = _coerce_int(row["approved_count"])
-    failed = _coerce_int(row["failed_count"])
-    total = _coerce_int(row["proposal_count"])
-    parts = [f"전체 {total}"]
-    if pending:
-        parts.append(f"확인 {pending}")
-    if approved:
-        parts.append(f"승인 {approved}")
-    if failed:
-        parts.append(f"실패 {failed}")
-    return " · ".join(parts)
+def _relative_time_label(seconds: int) -> str:
+    future = seconds > 0
+    amount = abs(seconds)
+    if amount < 60:
+        return "잠시 후" if future else "방금 전"
+    minutes = amount // 60
+    if minutes < 60:
+        return f"{minutes}분 {'후' if future else '전'}"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}시간 {'후' if future else '전'}"
+    days = hours // 24
+    return f"{days}일 {'후' if future else '전'}"
 
 
 def _notion_page_url(page_id: str | None) -> str:
@@ -763,10 +716,6 @@ def runs_page(runs: list[sqlite3.Row], logs: list[sqlite3.Row], notice: str | No
     <h1>실행 로그</h1>
   </div>
   <div class="actions">
-    <form method="post" action="/apply-approved">
-      <input type="hidden" name="return_to" value="/runs">
-      <button type="submit">승인 항목 반영</button>
-    </form>
     <form method="post" action="/runs/manual">
       <input type="hidden" name="return_to" value="/runs">
       <button class="primary" type="submit">수동 점검 실행</button>

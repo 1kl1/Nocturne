@@ -269,6 +269,43 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("0건 알림", verified_html)
         self.assertNotIn('placeholder="000000"', verified_html)
 
+    def test_dashboard_centers_recent_run_board(self) -> None:
+        run = {
+            "status": "success",
+            "finished_at": utc_now_iso(),
+            "started_at": utc_now_iso(),
+            "created_at": utc_now_iso(),
+            "proposal_count": 1,
+            "applied_count": 0,
+            "apply_failed_count": 0,
+        }
+        item = {
+            "item_kind": "proposal",
+            "source_page_id": "page-1",
+            "source_title": "Roadmap",
+            "issue_type": "error",
+            "apply_mode": "replace",
+            "status": "대기",
+            "happened_at": utc_now_iso(),
+            "notion_proposal_page_id": "proposal-page",
+        }
+        html = ui.dashboard(
+            {},
+            {},
+            {"timezone": "Asia/Seoul"},
+            [],
+            [run],
+            [item],
+        )
+
+        self.assertIn("1건", html)
+        self.assertIn("0건", html)
+        self.assertIn("run-board-row", html)
+        self.assertIn("Roadmap", html)
+        self.assertNotIn("다음 실행", html)
+        self.assertNotIn("보완 필요 페이지", html)
+        self.assertNotIn("승인 항목 반영", html)
+
 
 if __name__ == "__main__":
     unittest.main()

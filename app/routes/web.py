@@ -37,33 +37,9 @@ def dashboard_page(request: Request, notice: str | None = None) -> str:
     settings = db.notification_settings_for_user(user["id"])
     targets = db.active_targets(user["id"])
     runs = db.rows("SELECT * FROM runs WHERE user_id = ? ORDER BY created_at DESC LIMIT 5", (user["id"],))
-    improvements = db.rows(
-        """
-        SELECT
-            pc.source_page_id,
-            COALESCE(MAX(st.title), '') AS source_title,
-            COUNT(*) AS proposal_count,
-            SUM(CASE WHEN pc.status IN ('대기', '보류') THEN 1 ELSE 0 END) AS pending_count,
-            SUM(CASE WHEN pc.status = '승인' THEN 1 ELSE 0 END) AS approved_count,
-            SUM(CASE WHEN pc.status = '반영 실패' THEN 1 ELSE 0 END) AS failed_count,
-            SUM(CASE WHEN pc.issue_type = 'error' THEN 1 ELSE 0 END) AS error_count,
-            SUM(CASE WHEN pc.issue_type = 'omission' THEN 1 ELSE 0 END) AS omission_count,
-            SUM(CASE WHEN pc.issue_type = 'contradiction' THEN 1 ELSE 0 END) AS contradiction_count,
-            MAX(pc.confidence) AS max_confidence,
-            MAX(pc.created_at) AS latest_created_at,
-            MAX(pc.notion_proposal_page_id) AS notion_proposal_page_id
-        FROM proposals_cache pc
-        LEFT JOIN scan_targets st
-          ON st.user_id = pc.user_id AND st.notion_object_id = pc.source_page_id
-        WHERE pc.user_id = ?
-          AND pc.status IN ('대기', '보류', '승인', '반영 실패')
-        GROUP BY pc.source_page_id
-        ORDER BY approved_count DESC, pending_count DESC, latest_created_at DESC
-        LIMIT 8
-        """,
-        (user["id"],),
-    )
-    return ui.dashboard(user, connection, settings, targets, runs, improvements, notice)
+    latest_run = runs[0] if runs else None
+    run_items = _dashboard_run_items(db, user["id"], latest_run)
+    return ui.dashboard(user, connection, settings, targets, runs, run_items, notice)
 
 
 @router.get("/onboarding", response_class=HTMLResponse)
@@ -411,6 +387,65 @@ def _safe_return(path: str | None, default: str) -> str:
     if parsed.scheme or parsed.netloc or not path.startswith("/") or path.startswith("//"):
         return default
     return path
+
+
+def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) -> list[object]:
+    if not latest_run:
+        return []
+    proposal_rows = db.rows(
+        """
+        SELECT
+            'proposal' AS item_kind,
+            pc.id AS item_id,
+            pc.run_id,
+            pc.source_page_id,
+            COALESCE(st.title, '') AS source_title,
+            pc.issue_type,
+            pc.apply_mode,
+            pc.status,
+            pc.confidence,
+            pc.created_at AS happened_at,
+            pc.notion_proposal_page_id
+        FROM proposals_cache pc
+        LEFT JOIN scan_targets st
+          ON st.user_id = pc.user_id AND st.notion_object_id = pc.source_page_id
+        WHERE pc.user_id = ?
+          AND pc.run_id = ?
+        ORDER BY pc.created_at DESC
+        LIMIT 40
+        """,
+        (user_id, latest_run["run_id"]),
+    )
+    finished_at = latest_run["finished_at"]
+    applied_rows = db.rows(
+        """
+        SELECT
+            'applied' AS item_kind,
+            ne.id AS item_id,
+            COALESCE(pc.run_id, '') AS run_id,
+            ne.source_page_id,
+            COALESCE(st.title, '') AS source_title,
+            COALESCE(pc.issue_type, '') AS issue_type,
+            COALESCE(pc.apply_mode, '') AS apply_mode,
+            COALESCE(pc.status, '반영됨') AS status,
+            COALESCE(pc.confidence, 0) AS confidence,
+            ne.applied_at AS happened_at,
+            COALESCE(pc.notion_proposal_page_id, ne.proposal_id) AS notion_proposal_page_id
+        FROM nocturne_edits ne
+        LEFT JOIN proposals_cache pc
+          ON pc.user_id = ne.user_id AND pc.notion_proposal_page_id = ne.proposal_id
+        LEFT JOIN scan_targets st
+          ON st.user_id = ne.user_id AND st.notion_object_id = ne.source_page_id
+        WHERE ne.user_id = ?
+          AND ne.applied_at >= ?
+          AND (? IS NULL OR ne.applied_at <= ?)
+        ORDER BY ne.applied_at DESC
+        LIMIT 40
+        """,
+        (user_id, latest_run["started_at"] or latest_run["created_at"], finished_at, finished_at),
+    )
+    rows = list(applied_rows) + list(proposal_rows)
+    return sorted(rows, key=lambda row: row["happened_at"] or "", reverse=True)[:60]
 
 
 def _make_state(user_id: int, secret: str, return_to: str) -> str:
