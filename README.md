@@ -1,6 +1,6 @@
 # Nocturne
 
-Nocturne MVP is a single-container FastAPI application that audits selected Notion pages, stores suggested edits in a Notion database named `Nocturne 수정함`, and applies only suggestions that the user explicitly marks as `승인`.
+Nocturne MVP is a single-container FastAPI application that audits selected Notion pages, stores suggested edits in a Notion database named `Nocturne`, and applies only suggestions that the user explicitly marks as `승인`.
 
 ## What Is Implemented
 
@@ -82,4 +82,4 @@ docker run --rm -p 8000:8000 --env-file .env -v nocturne-data:/app/data nocturne
 
 ## Approval Boundary
 
-The agent can collect pages, analyze blocks, write suggestions, send notifications, and read approved suggestions. It only writes back to original Notion content when a proposal in `Nocturne 수정함` has status `승인`; `대기`, `거절`, and `보류` are never applied.
+The agent can collect pages, analyze blocks, write suggestions, send notifications, and read approved suggestions. It only writes back to original Notion content when a proposal in `Nocturne` has status `승인`; `대기`, `거절`, and `보류` are never applied.

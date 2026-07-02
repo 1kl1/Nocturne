@@ -497,6 +497,10 @@ select {
   color: var(--red);
 }
 
+.target-picker-status[data-tone="loading"] {
+  color: #4f5c54;
+}
+
 .target-result-list {
   display: grid;
   gap: 4px;
@@ -510,12 +514,13 @@ select {
 
 .target-tree-group,
 .target-tree-row {
-  width: 100%;
+  width: min(100%, 540px);
+  max-width: calc(100% - calc(var(--depth, 0) * 18px));
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px 10px;
   align-items: center;
-  margin-left: calc(var(--depth, 0) * 22px);
+  margin-left: calc(var(--depth, 0) * 18px);
 }
 
 .target-tree-group {
@@ -528,7 +533,9 @@ select {
 
 .target-tree-group strong {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .target-tree-group span {
@@ -536,10 +543,13 @@ select {
 }
 
 .target-tree-row {
-  min-height: 58px;
+  min-height: 48px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   text-align: left;
   background: #fff;
-  border-color: #111;
+  border: 1px solid #111;
+  border-radius: 8px;
+  padding: 6px 9px 6px 6px;
   position: relative;
   justify-content: stretch;
 }
@@ -571,31 +581,106 @@ select {
   box-shadow: inset 0 0 0 2px #111;
 }
 
-.target-tree-row strong,
-.target-tree-row span,
-.target-tree-row small {
+.target-expander {
+  width: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: transparent;
+  color: #111;
+  font-size: 20px;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.target-expander:hover {
+  background: #e4ebe7;
+}
+
+.target-expander:disabled {
+  color: #a5aaa6;
+  cursor: default;
+}
+
+.target-expander:disabled:hover {
+  background: transparent;
+}
+
+.target-select {
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: #111;
+  display: grid;
+  gap: 1px;
+  justify-items: start;
+  text-align: left;
+  box-shadow: none;
+}
+
+.target-select:hover {
+  background: transparent;
+}
+
+.target-select strong,
+.target-select small,
+.target-type {
   display: block;
   min-width: 0;
-  overflow-wrap: anywhere;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.target-tree-row strong {
-  grid-column: 1 / 2;
-}
-
-.target-tree-row span {
-  justify-self: end;
-}
-
-.target-tree-row small {
-  grid-column: 1 / -1;
-}
-
-.target-tree-row span,
-.target-tree-row small {
+.target-select small,
+.target-type {
   color: #68645e;
   font-size: 12px;
   font-weight: 680;
+}
+
+.target-type {
+  justify-self: end;
+  max-width: 88px;
+}
+
+.target-loading,
+.target-empty {
+  width: min(100%, 540px);
+  max-width: calc(100% - calc(var(--depth, 0) * 18px));
+  min-height: 42px;
+  margin-left: calc(var(--depth, 0) * 18px);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #58625c;
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.target-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #cbd3cf;
+  border-top-color: #111;
+  border-radius: 999px;
+  animation: target-spin 700ms linear infinite;
+}
+
+.target-spinner.tiny {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes target-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .target-selection {
@@ -622,7 +707,10 @@ select {
 }
 
 .target-selection strong {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 button,

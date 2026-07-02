@@ -16,6 +16,7 @@ from app.time_utils import utc_now_iso
 
 
 NOTION_VERSION = "2022-06-28"
+INBOX_DATABASE_TITLE = "Nocturne"
 
 ISSUE_LABELS = {
     "error": "오류",
@@ -166,15 +167,18 @@ class NotionService:
             if not cursor:
                 return children
 
-    def query_database_pages(self, user_id: int, database_id: str) -> list[dict[str, Any]]:
+    def query_database_pages(self, user_id: int, database_id: str, limit: int | None = None) -> list[dict[str, Any]]:
         pages: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
-            payload: dict[str, Any] = {"page_size": 100}
+            page_size = min(100, max(1, limit - len(pages))) if limit else 100
+            payload: dict[str, Any] = {"page_size": page_size}
             if cursor:
                 payload["start_cursor"] = cursor
             data = self._request(user_id, "POST", f"/databases/{database_id}/query", payload)
             pages.extend(data.get("results", []))
+            if limit and len(pages) >= limit:
+                return pages[:limit]
             cursor = data.get("next_cursor") if data.get("has_more") else None
             if not cursor:
                 return pages
@@ -186,8 +190,10 @@ class NotionService:
         query: str = "",
         object_type: str | None = None,
         limit: int = 25,
-    ) -> list[dict[str, str]]:
-        page_size = max(1, min(limit, 50))
+        root_only: bool = False,
+        resolve_parent_titles: bool = False,
+    ) -> list[dict[str, Any]]:
+        page_size = max(1, min(limit, 100))
         requested_type = object_type if object_type in {"page", "database"} else None
         payload: dict[str, Any] = {
             "page_size": page_size,
@@ -198,16 +204,44 @@ class NotionService:
         if requested_type:
             payload["filter"] = {"value": requested_type, "property": "object"}
         data = self._request(user_id, "POST", "/search", payload)
-        results: list[dict[str, str]] = []
+        results: list[dict[str, Any]] = []
         parent_cache: dict[tuple[str, str], str] = {}
         for item in data.get("results", []):
-            result = self._selectable_object(user_id, item, parent_cache)
+            result = self._selectable_object(user_id, item, parent_cache, resolve_parent_titles)
             if not result:
                 continue
             if requested_type and result["object_type"] != requested_type:
                 continue
+            if root_only and result["parent_type"] != "workspace":
+                continue
             results.append(result)
         return results
+
+    def list_selectable_children(
+        self,
+        user_id: int,
+        parent_id: str,
+        parent_type: str,
+        *,
+        object_type: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        requested_type = object_type if object_type in {"page", "database"} else None
+        page_size = max(1, min(limit, 100))
+        if parent_type == "workspace":
+            return self.search_selectable_objects(
+                user_id,
+                object_type=requested_type,
+                limit=page_size,
+                root_only=True,
+            )
+        if parent_type == "page":
+            return self._page_child_selectable_objects(user_id, parent_id, requested_type, page_size)
+        if parent_type == "database":
+            if requested_type == "database":
+                return []
+            return self._database_child_selectable_objects(user_id, parent_id, page_size)
+        return []
 
     def expand_targets(self, user_id: int) -> list[PageCandidate]:
         targets = self.db.active_targets(user_id)
@@ -303,7 +337,8 @@ class NotionService:
         user_id: int,
         item: dict[str, Any],
         parent_cache: dict[tuple[str, str], str],
-    ) -> dict[str, str] | None:
+        resolve_parent_titles: bool = False,
+    ) -> dict[str, Any] | None:
         object_type = item.get("object")
         object_id = str(item.get("id") or "")
         if not object_id or object_type not in {"page", "database"}:
@@ -312,21 +347,85 @@ class NotionService:
             title = self._title_from_page(item)
         else:
             title = _database_title(item)
-        parent = self._parent_context(user_id, item.get("parent") or {}, parent_cache)
+        parent = self._parent_context(user_id, item.get("parent") or {}, parent_cache, resolve_parent_titles)
         return {
             "object_id": object_id,
             "object_type": object_type,
             "title": title,
             "url": str(item.get("url") or ""),
             "last_edited_time": str(item.get("last_edited_time") or ""),
+            "has_children": True,
             **parent,
         }
+
+    def _page_child_selectable_objects(
+        self,
+        user_id: int,
+        page_id: str,
+        requested_type: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for block in self.list_block_children(user_id, page_id):
+            block_type = block.get("type")
+            if block_type == "child_page" and requested_type in {None, "page"}:
+                child = block.get("child_page") or {}
+                results.append(
+                    {
+                        "object_id": str(block.get("id") or ""),
+                        "object_type": "page",
+                        "title": str(child.get("title") or "Untitled"),
+                        "url": "",
+                        "last_edited_time": str(block.get("last_edited_time") or ""),
+                        "has_children": bool(block.get("has_children")),
+                        "parent_id": page_id,
+                        "parent_type": "page",
+                        "parent_title": "상위 페이지",
+                    }
+                )
+            elif block_type == "child_database" and requested_type in {None, "database"}:
+                child = block.get("child_database") or {}
+                results.append(
+                    {
+                        "object_id": str(block.get("id") or ""),
+                        "object_type": "database",
+                        "title": str(child.get("title") or "Untitled database"),
+                        "url": "",
+                        "last_edited_time": str(block.get("last_edited_time") or ""),
+                        "has_children": True,
+                        "parent_id": page_id,
+                        "parent_type": "page",
+                        "parent_title": "상위 페이지",
+                    }
+                )
+            if len(results) >= limit:
+                return results[:limit]
+        return results
+
+    def _database_child_selectable_objects(self, user_id: int, database_id: str, limit: int) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for page in self.query_database_pages(user_id, database_id, limit=limit):
+            results.append(
+                {
+                    "object_id": str(page.get("id") or ""),
+                    "object_type": "page",
+                    "title": self._title_from_page(page),
+                    "url": str(page.get("url") or ""),
+                    "last_edited_time": str(page.get("last_edited_time") or ""),
+                    "has_children": True,
+                    "parent_id": database_id,
+                    "parent_type": "database",
+                    "parent_title": "상위 데이터베이스",
+                }
+            )
+        return results
 
     def _parent_context(
         self,
         user_id: int,
         parent: dict[str, Any],
         parent_cache: dict[tuple[str, str], str],
+        resolve_parent_titles: bool = False,
     ) -> dict[str, str]:
         parent_type = str(parent.get("type") or "")
         if parent_type == "page_id":
@@ -334,14 +433,14 @@ class NotionService:
             return {
                 "parent_id": parent_id,
                 "parent_type": "page",
-                "parent_title": self._parent_title(user_id, "page", parent_id, parent_cache),
+                "parent_title": self._parent_title(user_id, "page", parent_id, parent_cache) if resolve_parent_titles else "상위 페이지",
             }
         if parent_type == "database_id":
             parent_id = str(parent.get("database_id") or "")
             return {
                 "parent_id": parent_id,
                 "parent_type": "database",
-                "parent_title": self._parent_title(user_id, "database", parent_id, parent_cache),
+                "parent_title": self._parent_title(user_id, "database", parent_id, parent_cache) if resolve_parent_titles else "상위 데이터베이스",
             }
         if parent_type == "block_id":
             return {
@@ -438,12 +537,13 @@ class NotionService:
     def ensure_inbox_database(self, user_id: int, parent_page_id: str | None) -> tuple[str | None, str | None]:
         connection = self.db.connection_for_user(user_id)
         if connection["notion_inbox_database_id"]:
+            self._ensure_inbox_database_title(user_id, connection["notion_inbox_database_id"])
             return connection["notion_inbox_database_id"], connection["notion_inbox_url"]
         if not parent_page_id:
             return None, None
         payload = {
             "parent": {"type": "page_id", "page_id": parent_page_id},
-            "title": [{"type": "text", "text": {"content": "Nocturne 수정함"}}],
+            "title": [{"type": "text", "text": {"content": INBOX_DATABASE_TITLE}}],
             "properties": self._inbox_properties(),
         }
         data = self._request(user_id, "POST", "/databases", payload)
@@ -458,6 +558,17 @@ class NotionService:
             (database_id, url, utc_now_iso(), user_id),
         )
         return database_id, url
+
+    def _ensure_inbox_database_title(self, user_id: int, database_id: str) -> None:
+        try:
+            self._request(
+                user_id,
+                "PATCH",
+                f"/databases/{database_id}",
+                {"title": [{"type": "text", "text": {"content": INBOX_DATABASE_TITLE}}]},
+            )
+        except Exception as exc:
+            self.db.log("inbox_title_update_failed", user_id=user_id, level="warning", payload={"error": str(exc)})
 
     def _inbox_properties(self) -> dict[str, Any]:
         return {

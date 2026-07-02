@@ -7,10 +7,15 @@
   const labels = {
     page: "페이지",
     database: "데이터베이스",
+    workspace: "워크스페이스",
   };
 
   function field(form, name) {
     return form.querySelector(`[name="${name}"]`);
+  }
+
+  function keyFor(item) {
+    return `${item.object_type || "item"}:${item.object_id || ""}`;
   }
 
   function formatEdited(value) {
@@ -33,6 +38,25 @@
     status.dataset.tone = tone || "";
   }
 
+  function stateFor(picker) {
+    if (!picker._targetState) {
+      picker._targetState = {
+        roots: [],
+        children: new Map(),
+        expanded: new Set(["workspace"]),
+        loaded: new Set(["workspace"]),
+        loading: new Set(),
+        items: new Map(),
+      };
+    }
+    return picker._targetState;
+  }
+
+  function selectedId(picker) {
+    const form = picker.closest("form");
+    return form ? field(form, "notion_object_id").value : "";
+  }
+
   function clearSelection(picker) {
     const form = picker.closest("form");
     const selection = picker.querySelector("[data-target-selection]");
@@ -45,9 +69,9 @@
     field(form, "url").value = "";
     selection.hidden = true;
     selection.replaceChildren();
-    picker.querySelectorAll(".target-tree-row").forEach((card) => {
-      card.classList.remove("selected");
-      card.setAttribute("aria-pressed", "false");
+    picker.querySelectorAll(".target-tree-row").forEach((row) => {
+      row.classList.remove("selected");
+      row.setAttribute("aria-selected", "false");
     });
   }
 
@@ -66,149 +90,216 @@
     label.textContent = "선택됨";
     const title = document.createElement("strong");
     title.textContent = item.title || "Untitled";
+    title.title = item.title || "Untitled";
     const meta = document.createElement("small");
     meta.textContent = labels[item.object_type] || item.object_type || "";
     selection.replaceChildren(label, title, meta);
     selection.hidden = false;
 
-    picker.querySelectorAll(".target-tree-row").forEach((card) => {
-      const selected = card.dataset.objectId === item.object_id;
-      card.classList.toggle("selected", selected);
-      card.setAttribute("aria-pressed", selected ? "true" : "false");
+    picker.querySelectorAll(".target-tree-row").forEach((row) => {
+      const selected = row.dataset.objectId === item.object_id;
+      row.classList.toggle("selected", selected);
+      row.setAttribute("aria-selected", selected ? "true" : "false");
     });
     setStatus(picker, "", "");
   }
 
-  function parentLabel(item) {
-    if (!item.parent_title) {
-      return item.parent_type === "workspace" ? "워크스페이스" : "";
-    }
-    return item.parent_title;
+  function hasChildren(item) {
+    return item.object_type === "database" || item.has_children === true || item.has_children === "true";
   }
 
-  function groupLabel(type) {
-    if (type === "database") {
-      return "상위 데이터베이스";
-    }
-    if (type === "page") {
-      return "상위 페이지";
-    }
-    if (type === "block") {
-      return "상위 블록";
-    }
-    return "워크스페이스";
+  function itemMeta(item) {
+    const edited = formatEdited(item.last_edited_time);
+    const parent = item.parent_type === "workspace" ? "워크스페이스" : item.parent_title || "";
+    return [labels[item.object_type] || item.object_type, parent, edited].filter(Boolean).join(" · ");
   }
 
-  function buildTree(items) {
-    const itemMap = new Map();
-    const childMap = new Map();
-    const groupMap = new Map();
-    const roots = [];
+  function loadingNode(message, level) {
+    const node = document.createElement("div");
+    node.className = "target-loading";
+    node.style.setProperty("--depth", String(level || 0));
 
-    items.forEach((item) => {
-      itemMap.set(item.object_id, item);
-      childMap.set(item.object_id, []);
-    });
+    const spinner = document.createElement("span");
+    spinner.className = "target-spinner";
+    spinner.setAttribute("aria-hidden", "true");
 
-    items.forEach((item) => {
-      if (item.parent_id && itemMap.has(item.parent_id)) {
-        childMap.get(item.parent_id).push(item);
-        return;
-      }
-      if (item.parent_id && item.parent_type && item.parent_type !== "workspace") {
-        const groupKey = `${item.parent_type}:${item.parent_id}`;
-        if (!groupMap.has(groupKey)) {
-          const group = {
-            virtual: true,
-            key: groupKey,
-            title: item.parent_title || groupLabel(item.parent_type),
-            object_type: item.parent_type,
-            children: [],
-          };
-          groupMap.set(groupKey, group);
-          roots.push(group);
-        }
-        groupMap.get(groupKey).children.push(item);
-        return;
-      }
-      roots.push(item);
-    });
-
-    return { roots, childMap };
+    const text = document.createElement("span");
+    text.textContent = message;
+    node.replaceChildren(spinner, text);
+    return node;
   }
 
-  function treeGroup(group, level) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "target-tree-group";
-    wrapper.style.setProperty("--depth", String(level));
+  function workspaceNode(count) {
+    const node = document.createElement("div");
+    node.className = "target-tree-group";
+    node.style.setProperty("--depth", "0");
 
     const title = document.createElement("strong");
-    title.textContent = group.title || groupLabel(group.object_type);
+    title.textContent = "워크스페이스";
 
     const meta = document.createElement("span");
-    meta.textContent = groupLabel(group.object_type);
-
-    wrapper.replaceChildren(title, meta);
-    return wrapper;
+    meta.textContent = `${count}개 항목`;
+    node.replaceChildren(title, meta);
+    return node;
   }
 
   function treeRow(picker, item, level) {
-    const row = document.createElement("button");
-    row.type = "button";
+    const state = stateFor(picker);
+    const row = document.createElement("div");
+    const key = keyFor(item);
     row.className = "target-tree-row";
     row.dataset.objectId = item.object_id || "";
     row.style.setProperty("--depth", String(level));
-    row.setAttribute("aria-pressed", "false");
+    row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-selected", selectedId(picker) === item.object_id ? "true" : "false");
+    row.classList.toggle("selected", selectedId(picker) === item.object_id);
+
+    const expander = document.createElement("button");
+    expander.type = "button";
+    expander.className = "target-expander";
+    expander.disabled = !hasChildren(item);
+    expander.setAttribute("aria-label", `${item.title || "Untitled"} 하위 항목`);
+    expander.setAttribute("aria-expanded", state.expanded.has(key) ? "true" : "false");
+    expander.textContent = state.loading.has(key) ? "" : state.expanded.has(key) ? "⌄" : "›";
+    if (state.loading.has(key)) {
+      const spinner = document.createElement("span");
+      spinner.className = "target-spinner tiny";
+      spinner.setAttribute("aria-hidden", "true");
+      expander.appendChild(spinner);
+    }
+    expander.addEventListener("click", () => toggleChildren(picker, item));
+
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "target-select";
+    select.title = item.title || "Untitled";
 
     const title = document.createElement("strong");
     title.textContent = item.title || "Untitled";
 
-    const meta = document.createElement("span");
-    const edited = formatEdited(item.last_edited_time);
-    meta.textContent = [labels[item.object_type] || item.object_type, edited].filter(Boolean).join(" · ");
+    const meta = document.createElement("small");
+    meta.textContent = itemMeta(item);
+    select.replaceChildren(title, meta);
+    select.addEventListener("click", () => selectItem(picker, item));
 
-    const parent = document.createElement("small");
-    parent.textContent = parentLabel(item);
+    const type = document.createElement("span");
+    type.className = "target-type";
+    type.textContent = labels[item.object_type] || item.object_type || "";
 
-    row.replaceChildren(title, meta, parent);
-    row.addEventListener("click", () => selectItem(picker, item));
+    row.replaceChildren(expander, select, type);
     return row;
   }
 
-  function appendNode(fragment, picker, node, level, childMap) {
-    if (node.virtual) {
-      fragment.appendChild(treeGroup(node, level));
-      node.children.forEach((child) => appendNode(fragment, picker, child, level + 1, childMap));
-      return;
-    }
-    fragment.appendChild(treeRow(picker, node, level));
-    const children = childMap.get(node.object_id) || [];
-    children.forEach((child) => appendNode(fragment, picker, child, level + 1, childMap));
+  function appendItems(fragment, picker, items, level) {
+    const state = stateFor(picker);
+    items.forEach((item) => {
+      const key = keyFor(item);
+      fragment.appendChild(treeRow(picker, item, level));
+      if (state.loading.has(key)) {
+        fragment.appendChild(loadingNode("하위 항목을 불러오는 중입니다.", level + 1));
+      }
+      if (state.expanded.has(key) && state.children.has(key)) {
+        appendItems(fragment, picker, state.children.get(key), level + 1);
+      }
+    });
   }
 
-  function renderResults(picker, items) {
+  function renderTree(picker) {
     const results = picker.querySelector("[data-target-results]");
+    const state = stateFor(picker);
     if (!results) {
       return;
     }
     results.replaceChildren();
-    if (!items.length) {
-      setStatus(picker, "선택 가능한 Notion 대상이 없습니다.", "muted");
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(workspaceNode(state.roots.length));
+    if (state.loading.has("workspace")) {
+      fragment.appendChild(loadingNode("워크스페이스 항목을 불러오는 중입니다.", 1));
+    } else if (!state.roots.length) {
+      const empty = document.createElement("div");
+      empty.className = "target-empty";
+      empty.textContent = "선택 가능한 Notion 대상이 없습니다.";
+      fragment.appendChild(empty);
+    } else {
+      appendItems(fragment, picker, state.roots, 1);
+    }
+    results.appendChild(fragment);
+  }
+
+  function rememberItems(picker, items) {
+    const state = stateFor(picker);
+    items.forEach((item) => {
+      state.items.set(keyFor(item), item);
+    });
+  }
+
+  async function fetchItems(url) {
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Notion 목록을 불러오지 못했습니다.");
+    }
+    return Array.isArray(data.items) ? data.items : [];
+  }
+
+  async function toggleChildren(picker, item) {
+    if (!hasChildren(item)) {
       return;
     }
-    const fragment = document.createDocumentFragment();
-    const tree = buildTree(items);
-    tree.roots.forEach((node) => appendNode(fragment, picker, node, 0, tree.childMap));
-    results.appendChild(fragment);
-    setStatus(picker, `${items.length}개 대상을 계층형으로 불러왔습니다.`, "ok");
+    const state = stateFor(picker);
+    const key = keyFor(item);
+    if (state.loading.has(key)) {
+      return;
+    }
+    if (state.loaded.has(key)) {
+      if (state.expanded.has(key)) {
+        state.expanded.delete(key);
+      } else {
+        state.expanded.add(key);
+      }
+      renderTree(picker);
+      return;
+    }
+
+    const type = picker.querySelector("[data-target-type]");
+    const url = new URL("/api/notion/children", window.location.origin);
+    url.searchParams.set("limit", "50");
+    url.searchParams.set("parent_id", item.object_id || "");
+    url.searchParams.set("parent_type", item.object_type || "");
+    if (type && type.value) {
+      url.searchParams.set("object_type", type.value);
+    }
+
+    state.loading.add(key);
+    state.expanded.add(key);
+    renderTree(picker);
+    try {
+      const items = await fetchItems(url);
+      state.children.set(key, items);
+      state.loaded.add(key);
+      rememberItems(picker, items);
+      if (!items.length) {
+        item.has_children = false;
+        setStatus(picker, "하위 항목이 없습니다.", "muted");
+      } else {
+        setStatus(picker, `${items.length}개 하위 항목을 추가했습니다.`, "ok");
+      }
+    } catch (error) {
+      state.expanded.delete(key);
+      setStatus(picker, error.message || "하위 항목을 불러오지 못했습니다.", "error");
+    } finally {
+      state.loading.delete(key);
+      renderTree(picker);
+    }
   }
 
   async function loadTargets(picker) {
+    const state = stateFor(picker);
     const query = picker.querySelector("[data-target-query]");
     const type = picker.querySelector("[data-target-type]");
     const button = picker.querySelector("[data-target-search]");
     const url = new URL("/api/notion/search", window.location.origin);
-    url.searchParams.set("limit", "25");
+    url.searchParams.set("limit", "50");
     if (query && query.value.trim()) {
       url.searchParams.set("q", query.value.trim());
     }
@@ -217,24 +308,31 @@
     }
 
     clearSelection(picker);
-    setStatus(picker, "Notion에서 불러오는 중입니다.", "loading");
+    state.roots = [];
+    state.children.clear();
+    state.expanded = new Set(["workspace"]);
+    state.loaded = new Set(["workspace"]);
+    state.loading = new Set(["workspace"]);
+    state.items.clear();
+    renderTree(picker);
+    setStatus(picker, query && query.value.trim() ? "검색 결과를 불러오는 중입니다." : "워크스페이스 항목을 불러오는 중입니다.", "loading");
     if (button) {
       button.disabled = true;
     }
     try {
-      const response = await fetch(url, { headers: { Accept: "application/json" } });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || "Notion 목록을 불러오지 못했습니다.");
-      }
-      renderResults(picker, Array.isArray(data.items) ? data.items : []);
+      const items = await fetchItems(url);
+      state.roots = items;
+      rememberItems(picker, items);
+      setStatus(picker, `${items.length}개 항목을 불러왔습니다.`, "ok");
     } catch (error) {
-      renderResults(picker, []);
+      state.roots = [];
       setStatus(picker, error.message || "Notion 목록을 불러오지 못했습니다.", "error");
     } finally {
+      state.loading.delete("workspace");
       if (button) {
         button.disabled = false;
       }
+      renderTree(picker);
     }
   }
 

@@ -191,13 +191,36 @@ def search_notion_targets(
     request: Request,
     q: str = "",
     object_type: str = "",
-    limit: int = Query(25, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=100),
 ) -> JSONResponse:
     user = request.app.state.db.default_user()
     try:
         items = request.app.state.notion.search_selectable_objects(
             user["id"],
             query=q,
+            object_type=object_type or None,
+            limit=limit,
+            root_only=not q.strip(),
+        )
+    except Exception as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return JSONResponse({"items": items})
+
+
+@router.get("/api/notion/children")
+def notion_target_children(
+    request: Request,
+    parent_id: str = "",
+    parent_type: str = "",
+    object_type: str = "",
+    limit: int = Query(50, ge=1, le=100),
+) -> JSONResponse:
+    user = request.app.state.db.default_user()
+    try:
+        items = request.app.state.notion.list_selectable_children(
+            user["id"],
+            parent_id=parent_id,
+            parent_type=parent_type,
             object_type=object_type or None,
             limit=limit,
         )
@@ -214,7 +237,6 @@ def add_target(
     title: str = Form(...),
     url: str = Form(""),
     excluded_page_ids: str = Form(""),
-    include_children: str | None = Form(None),
     return_to: str = Form(""),
 ) -> RedirectResponse:
     db = request.app.state.db
@@ -239,7 +261,7 @@ def add_target(
             object_type,
             display_title,
             url.strip() or None,
-            1 if include_children else 0,
+            1,
             json.dumps(excluded, ensure_ascii=False),
             now,
             now,
@@ -249,7 +271,7 @@ def add_target(
     if object_type == "page":
         try:
             request.app.state.notion.ensure_inbox_database(user["id"], object_id)
-            notice = "점검 대상을 추가하고 Nocturne 수정함을 확인했습니다."
+            notice = "점검 대상을 추가하고 Nocturne을 확인했습니다."
         except Exception as exc:
             db.log("inbox_ensure_after_target_failed", user_id=user["id"], level="warning", payload={"error": str(exc)})
     return _redirect(_safe_return(return_to, "/settings"), notice)

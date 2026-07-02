@@ -107,7 +107,7 @@ class AgentHarness:
             self._log_tool_call(user_id, run_id, "notion.ensure_inbox_database", "start")
             inbox_id, inbox_url = self.notion.ensure_inbox_database(user_id, changed_pages[0].page_id if changed_pages else pages[0].page_id)
             if not inbox_id:
-                raise RuntimeError("Nocturne 수정함 데이터베이스를 만들지 못했습니다.")
+                raise RuntimeError("Nocturne 데이터베이스를 만들지 못했습니다.")
             self._log_tool_call(user_id, run_id, "notion.ensure_inbox_database", "success", {"database_id": inbox_id})
 
             for page in changed_pages:

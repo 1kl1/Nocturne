@@ -139,16 +139,43 @@ class CoreTest(unittest.TestCase):
 
             def fake_request(user_id: int, method: str, path: str, payload: object = None, retries: int = 2) -> dict:
                 calls.append({"user_id": user_id, "method": method, "path": path, "payload": payload})
-                if path == "/pages/parent-page":
+                if path.startswith("/blocks/page-1/children"):
                     return {
-                        "object": "page",
-                        "id": "parent-page",
-                        "properties": {
-                            "Name": {
-                                "type": "title",
-                                "title": [{"plain_text": "Parent Hub"}],
+                        "results": [
+                            {
+                                "type": "child_page",
+                                "id": "child-page",
+                                "has_children": False,
+                                "last_edited_time": "2026-07-02T00:00:00.000Z",
+                                "child_page": {"title": "Child Page"},
+                            },
+                            {
+                                "type": "child_database",
+                                "id": "child-db",
+                                "has_children": True,
+                                "last_edited_time": "2026-07-02T00:00:00.000Z",
+                                "child_database": {"title": "Child DB"},
+                            },
+                        ],
+                        "has_more": False,
+                    }
+                if path == "/databases/db-1/query":
+                    return {
+                        "results": [
+                            {
+                                "object": "page",
+                                "id": "db-page",
+                                "url": "https://notion.so/db-page",
+                                "last_edited_time": "2026-07-02T00:00:00.000Z",
+                                "properties": {
+                                    "Name": {
+                                        "type": "title",
+                                        "title": [{"plain_text": "DB Page"}],
+                                    }
+                                },
                             }
-                        },
+                        ],
+                        "has_more": False,
                     }
                 return {
                     "results": [
@@ -180,18 +207,26 @@ class CoreTest(unittest.TestCase):
             service._request = fake_request  # type: ignore[method-assign]
             all_results = service.search_selectable_objects(user["id"], query="Roadmap", limit=10)
             page_results = service.search_selectable_objects(user["id"], object_type="page", limit=80)
+            root_results = service.search_selectable_objects(user["id"], limit=50, root_only=True)
+            page_children = service.list_selectable_children(user["id"], "page-1", "page")
+            database_children = service.list_selectable_children(user["id"], "db-1", "database")
             search_calls = [call for call in calls if call["path"] == "/search"]
 
             self.assertEqual(search_calls[0]["payload"]["query"], "Roadmap")
             self.assertNotIn("filter", search_calls[0]["payload"])
             self.assertEqual(all_results[0]["title"], "Roadmap")
             self.assertEqual(all_results[0]["parent_type"], "page")
-            self.assertEqual(all_results[0]["parent_title"], "Parent Hub")
+            self.assertEqual(all_results[0]["parent_title"], "상위 페이지")
             self.assertEqual(all_results[1]["title"], "Knowledge Base")
             self.assertEqual(all_results[1]["parent_type"], "workspace")
-            self.assertEqual(search_calls[1]["payload"]["page_size"], 50)
+            self.assertEqual(search_calls[1]["payload"]["page_size"], 80)
             self.assertEqual(search_calls[1]["payload"]["filter"], {"value": "page", "property": "object"})
             self.assertEqual([result["object_type"] for result in page_results], ["page"])
+            self.assertEqual([result["object_id"] for result in root_results], ["db-1"])
+            self.assertEqual([result["title"] for result in page_children], ["Child Page", "Child DB"])
+            self.assertEqual(page_children[0]["has_children"], False)
+            self.assertEqual(database_children[0]["title"], "DB Page")
+            self.assertNotIn("/pages/parent-page", [call["path"] for call in calls])
 
     def test_onboarding_skips_scope_and_stages_email_flow(self) -> None:
         settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
@@ -214,6 +249,8 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("setup tasks", html)
         self.assertNotIn("승인 경계 확인", html)
         self.assertNotIn("OpenRouter", html)
+        self.assertIn('name="include_children" value="1"', html)
+        self.assertNotIn("하위 페이지 포함", html)
         self.assertIn('name="email"', html)
         self.assertNotIn('name="code"', html)
         self.assertNotIn("시간 저장하고 계속", html)

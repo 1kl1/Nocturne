@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702c"
+ASSET_VERSION = "20260702d"
 
 
 EVENT_LABELS = {
@@ -144,7 +144,7 @@ def onboarding_page(
         safe_step = 2
     notice_html = f'<div class="tutorial-notice">{_escape(notice)}</div>' if notice else ""
     target_rows = "".join(
-        f'<li><strong>{_escape(target["title"])}</strong><span>{_escape(target["notion_object_type"])} · {"하위 포함" if target["include_children"] else "단일 대상"}</span></li>'
+        f'<li><strong>{_escape(target["title"])}</strong><span>{_escape(target["notion_object_type"])} · 하위 포함</span></li>'
         for target in targets[:4]
     ) or "<li><strong>아직 비어 있음</strong><span>첫 점검 범위를 추가하면 여기에 남습니다.</span></li>"
     skipped_steps = "1" if has_targets else ""
@@ -194,10 +194,6 @@ def onboarding_page(
           <form class="onboarding-form compact-form target-picker-form" method="post" action="/targets" data-target-form>
             <input type="hidden" name="return_to" value="/onboarding?step=2">
             {target_picker_fields()}
-            <label class="checkline">
-              <input type="checkbox" name="include_children" checked>
-              <span>하위 페이지 포함</span>
-            </label>
             <button class="primary ink-button" type="submit">대상 추가</button>
           </form>
           <ul class="target-chip-list">{target_rows}</ul>
@@ -546,10 +542,6 @@ def settings_page(
     <label>제외 페이지 ID
       <input name="excluded_page_ids" placeholder="쉼표로 구분">
     </label>
-    <label class="checkline">
-      <input type="checkbox" name="include_children" checked>
-      <span>하위 페이지 포함</span>
-    </label>
     <button class="primary" type="submit">대상 추가</button>
   </form>
   <div class="table-wrap settings-table">
@@ -644,10 +636,6 @@ def targets_page(targets: list[sqlite3.Row], notice: str | None = None) -> str:
     <label>제외 페이지 ID
       <input name="excluded_page_ids" placeholder="쉼표로 구분">
     </label>
-    <label class="checkline">
-      <input type="checkbox" name="include_children" checked>
-      <span>하위 페이지 포함</span>
-    </label>
     <button class="primary" type="submit">대상 추가</button>
   </form>
 </section>
@@ -687,6 +675,7 @@ def target_picker_fields() -> str:
       <input type="hidden" name="notion_object_type">
       <input type="hidden" name="title">
       <input type="hidden" name="url">
+      <input type="hidden" name="include_children" value="1">
     </div>
 """
 
