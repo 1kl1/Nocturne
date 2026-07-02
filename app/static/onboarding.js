@@ -44,6 +44,9 @@
       const active = Number(step.dataset.step) === next;
       step.classList.toggle("active", active);
       step.setAttribute("aria-hidden", active ? "false" : "true");
+      if (active) {
+        step.dispatchEvent(new CustomEvent("onboarding:step-active", { bubbles: true }));
+      }
     });
     dots.forEach((dot) => {
       const active = Number(dot.dataset.stepTarget) === next;

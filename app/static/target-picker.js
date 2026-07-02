@@ -42,6 +42,9 @@
     if (response.status !== 401) {
       return false;
     }
+    if (window.location.pathname.startsWith("/onboarding")) {
+      return true;
+    }
     window.location.assign("/");
     return true;
   }
@@ -469,6 +472,20 @@
       });
     }
 
-    loadTargets(picker);
+    const step = picker.closest(".onboarding-step");
+    if (step) {
+      step.addEventListener("onboarding:step-active", () => {
+        if (!picker._loadedOnce) {
+          picker._loadedOnce = true;
+          loadTargets(picker);
+        }
+      });
+      if (step.classList.contains("active")) {
+        picker._loadedOnce = true;
+        loadTargets(picker);
+      }
+    } else {
+      loadTargets(picker);
+    }
   });
 })();
