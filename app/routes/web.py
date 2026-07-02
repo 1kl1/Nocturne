@@ -57,20 +57,6 @@ def _clear_session_cookie(response: RedirectResponse) -> None:
     response.delete_cookie(SESSION_COOKIE)
 
 
-def _anonymous_connection() -> dict[str, object]:
-    return {
-        "notion_access_token_encrypted": None,
-        "notion_workspace_id": "",
-        "notion_workspace_name": "",
-        "notification_email": "",
-        "notification_email_verified": 0,
-    }
-
-
-def _anonymous_settings() -> dict[str, object]:
-    return {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
-
-
 @router.get("/favicon.ico")
 def favicon() -> FileResponse:
     return FileResponse("app/static/nocturne-icon.svg", media_type="image/svg+xml")
@@ -108,18 +94,11 @@ def onboarding(request: Request, notice: str | None = None, step: int = 0) -> st
     db = request.app.state.db
     user = _current_user(request)
     if not user:
-        if "step" in request.query_params and step > 0:
-            return _auth_redirect()
-        return ui.onboarding_page(
-            _anonymous_connection(),
-            _anonymous_settings(),
-            [],
-            False,
-            notice,
-            0,
-        )
+        return _auth_redirect()
     connection = db.connection_for_user(user["id"])
     targets = db.active_targets(user["id"])
+    if _onboarding_complete(connection, targets) and "step" not in request.query_params:
+        return RedirectResponse("/dashboard", status_code=303)
     review_acknowledged = _progress_done(db, user["id"], "review_boundary")
     allowed_step = _allowed_onboarding_step(connection, targets, review_acknowledged)
     requested_step = allowed_step if "step" not in request.query_params else step

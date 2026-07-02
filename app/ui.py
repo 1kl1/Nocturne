@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702n"
+ASSET_VERSION = "20260702o"
 
 
 EVENT_LABELS = {
@@ -128,7 +128,7 @@ def intro_page(notice: str | None = None) -> str:
     <section class="intro-hero" aria-labelledby="intro-title">
       <img class="intro-icon" src="/static/nocturne-icon.svg" alt="">
       <h1 id="intro-title">Nocturne</h1>
-      <a class="start-button" href="/onboarding">
+      <a class="start-button" href="/auth/notion/start?next=%2Fonboarding%3Fstep%3D1">
         <span>시작하기</span>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l8 7-8 7V5Z"/></svg>
       </a>

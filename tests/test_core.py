@@ -196,6 +196,54 @@ class CoreTest(unittest.TestCase):
             request.cookies = {}
             self.assertIsNone(web._current_user(request))
 
+    def test_intro_start_button_begins_notion_oauth(self) -> None:
+        html = ui.intro_page()
+
+        self.assertIn('href="/auth/notion/start?next=%2Fonboarding%3Fstep%3D1"', html)
+        self.assertNotIn('href="/onboarding"', html)
+
+    def test_onboarding_requires_browser_session(self) -> None:
+        request = SimpleNamespace(cookies={}, query_params={}, app=SimpleNamespace(state=SimpleNamespace(db=None)))
+
+        response = web.onboarding(request)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertTrue(response.headers["location"].startswith("/?notice="))
+
+    def test_completed_onboarding_redirects_to_dashboard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(Path(tmp) / "nocturne.sqlite3")
+            db = Database(settings)
+            db.initialize()
+            user = db.user_for_notion_oauth({"workspace_id": "workspace-a", "bot_id": "bot-a"})
+            db.update(
+                """
+                UPDATE connections
+                SET notion_access_token_encrypted = ?, notification_email = ?, notification_email_verified = 1
+                WHERE user_id = ?
+                """,
+                ("encrypted-token", "me@example.com", user["id"]),
+            )
+            db.execute(
+                """
+                INSERT INTO scan_targets
+                    (user_id, notion_object_id, notion_object_type, title, url, include_children, excluded_page_ids, active, created_at, updated_at)
+                VALUES (?, 'page-1', 'page', 'Roadmap', '', 1, '[]', 1, ?, ?)
+                """,
+                (user["id"], utc_now_iso(), utc_now_iso()),
+            )
+            token = web._make_session_token(user["id"], settings.encryption_key)
+            request = SimpleNamespace(
+                cookies={web.SESSION_COOKIE: token},
+                query_params={},
+                app=SimpleNamespace(state=SimpleNamespace(settings=settings, db=db)),
+            )
+
+            response = web.onboarding(request)
+
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.headers["location"], "/dashboard")
+
     def test_scheduler_only_runs_oauth_connected_users(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = settings_for(Path(tmp) / "nocturne.sqlite3")
