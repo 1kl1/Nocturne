@@ -80,6 +80,7 @@ class AgentHarness:
                 raise RuntimeError("이메일 알림 채널을 먼저 연결해야 합니다.")
             if not self.db.active_targets(user_id):
                 raise RuntimeError("점검 대상을 먼저 추가해야 합니다.")
+            agent_settings = self.db.agent_settings_for_user(user_id)
 
             self._log_tool_call(user_id, run_id, "approval.apply_approved", "start")
             apply_result = self.applier.apply_approved(user_id, run_id)
@@ -130,20 +131,22 @@ class AgentHarness:
                     self._log_tool_call(user_id, run_id, "notion.fetch_text_blocks", "success", {"page_id": page.page_id, "blocks": len(blocks)})
                     if not blocks:
                         continue
-                    self._log_tool_call(user_id, run_id, "web_search.candidate_queries", "start", {"page_id": page.page_id})
-                    queries = self.web_search.candidate_queries(blocks)
-                    self._log_tool_call(user_id, run_id, "web_search.candidate_queries", "success", {"page_id": page.page_id, "queries": len(queries)})
-                    self._log_tool_call(user_id, run_id, "web_search.search_many", "start", {"page_id": page.page_id, "queries": len(queries)})
-                    search_results = self.web_search.search_many(queries)
-                    self._log_tool_call(
-                        user_id,
-                        run_id,
-                        "web_search.search_many",
-                        "success",
-                        {"page_id": page.page_id, "result_groups": len(search_results)},
-                    )
+                    search_results = {}
+                    if int(agent_settings["search_recent_trends"] or 0):
+                        self._log_tool_call(user_id, run_id, "web_search.candidate_queries", "start", {"page_id": page.page_id})
+                        queries = self.web_search.candidate_queries(blocks)
+                        self._log_tool_call(user_id, run_id, "web_search.candidate_queries", "success", {"page_id": page.page_id, "queries": len(queries)})
+                        self._log_tool_call(user_id, run_id, "web_search.search_many", "start", {"page_id": page.page_id, "queries": len(queries)})
+                        search_results = self.web_search.search_many(queries)
+                        self._log_tool_call(
+                            user_id,
+                            run_id,
+                            "web_search.search_many",
+                            "success",
+                            {"page_id": page.page_id, "result_groups": len(search_results)},
+                        )
                     self._log_tool_call(user_id, run_id, "openrouter.analyze_blocks", "start", {"page_id": page.page_id, "blocks": len(blocks)})
-                    proposals = self.openrouter.analyze_blocks(openrouter_key, blocks, search_results)
+                    proposals = self.openrouter.analyze_blocks(openrouter_key, blocks, search_results, agent_settings)
                     self._log_tool_call(user_id, run_id, "openrouter.analyze_blocks", "success", {"page_id": page.page_id, "proposals": len(proposals)})
                     self._log_tool_call(user_id, run_id, "validator.validate", "start", {"page_id": page.page_id, "proposals": len(proposals)})
                     validation = self.validator.validate(user_id, blocks, proposals)

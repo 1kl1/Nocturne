@@ -216,6 +216,23 @@
     }
   }
 
+  async function rejectProposal(node) {
+    if (!node || !node.proposalId) return;
+    setStatus("거부 처리 중");
+    try {
+      const response = await fetch(`/api/proposals/${node.proposalId}/reject`, { method: "POST" });
+      if (redirectIfUnauthorized(response)) return;
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || data.message || "거부 실패");
+      await loadGraph();
+      state.selected = null;
+      renderDefaultInspector();
+      setStatus(data.message || "거부 완료");
+    } catch (error) {
+      setStatus(error.message || "거부 실패");
+    }
+  }
+
   function renderData(data, options) {
     state.data = normalizeData(data);
     nodeCountEl.textContent = String(state.data.meta.nodeCount || state.data.nodes.length);
@@ -263,14 +280,12 @@
     if (node.kind === "proposal") {
       inspector.kicker.textContent = "Agent 제안";
       inspector.title.textContent = node.name || "제안";
-      inspector.body.textContent = node.suggestedSentence || node.rationale || node.status || "대기";
-      appendMeta("원본", node.sourceTitle || trim(node.sourcePageId || "", 18));
-      appendMeta("상태", node.status || "-");
-      appendMeta("방식", node.applyMode || "-");
+      inspector.body.textContent = node.rationale || node.suggestedSentence || "제안 내용을 확인해 주세요.";
       appendMeta("확신도", node.confidence ? `${Math.round(node.confidence * 100)}%` : "-");
-      if (node.originalSentence) appendMeta("현재", trim(node.originalSentence, 120));
-      if (node.rationale) appendMeta("근거", trim(node.rationale, 120));
-      if (node.status !== "반영됨") {
+      appendProposalDiff(node);
+      if (node.rationale) appendTextMeta("근거", node.rationale);
+      if (Array.isArray(node.sourceUrls) && node.sourceUrls.length) appendTextMeta("출처", node.sourceUrls.join("\n"));
+      if (node.status !== "반영됨" && node.status !== "거절") {
         const button = document.createElement("button");
         button.className = "primary";
         button.type = "button";
@@ -279,9 +294,13 @@
           approveProposal(node);
         });
         inspector.actions.appendChild(button);
-      }
-      if (node.notionProposalPageId) {
-        inspector.actions.appendChild(notionLink(node.notionProposalPageId, "Notion"));
+        const rejectButton = document.createElement("button");
+        rejectButton.type = "button";
+        rejectButton.textContent = "거부";
+        rejectButton.addEventListener("click", function () {
+          rejectProposal(node);
+        });
+        inspector.actions.appendChild(rejectButton);
       }
       return;
     }
@@ -328,6 +347,38 @@
     dd.textContent = value || "-";
     item.append(dt, dd);
     inspector.meta.appendChild(item);
+  }
+
+  function appendTextMeta(label, value) {
+    const text = String(value || "").trim();
+    if (!text) return;
+    appendMeta(label, text);
+  }
+
+  function appendProposalDiff(node) {
+    const original = node.originalSentence || "";
+    const suggested = node.suggestedSentence || "";
+    if (!original && !suggested) return;
+    const item = document.createElement("div");
+    item.className = "graph-proposal-diff";
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dt.textContent = node.applyMode === "append" ? "추가 제안" : "수정 diff";
+    if (original) dd.appendChild(diffLine("-", original));
+    if (suggested) dd.appendChild(diffLine("+", suggested));
+    item.append(dt, dd);
+    inspector.meta.appendChild(item);
+  }
+
+  function diffLine(prefix, value) {
+    const row = document.createElement("div");
+    row.className = `diff-line ${prefix === "+" ? "add" : "remove"}`;
+    const mark = document.createElement("span");
+    const body = document.createElement("p");
+    mark.textContent = prefix;
+    body.textContent = value;
+    row.append(mark, body);
+    return row;
   }
 
   function notionLink(pageId, label) {

@@ -132,6 +132,7 @@ class CoreTest(unittest.TestCase):
             self.assertIn("knowledge_graph_nodes", tables)
             self.assertIn("knowledge_graph_edges", tables)
             self.assertIn("knowledge_graph_syncs", tables)
+            self.assertIn("agent_settings", tables)
             self.assertIn("suggested_sentence", proposal_columns)
             self.assertIn("source_urls", proposal_columns)
 
@@ -196,16 +197,24 @@ class CoreTest(unittest.TestCase):
             request.cookies = {}
             self.assertIsNone(web._current_user(request))
 
-    def test_intro_start_button_begins_notion_oauth(self) -> None:
+    def test_intro_start_button_opens_tutorial_before_oauth(self) -> None:
         html = ui.intro_page()
 
-        self.assertIn('href="/auth/notion/start?next=%2Fonboarding%3Fstep%3D1"', html)
-        self.assertNotIn('href="/onboarding"', html)
+        self.assertIn('href="/onboarding"', html)
+        self.assertNotIn('href="/auth/notion/start', html)
 
-    def test_onboarding_requires_browser_session(self) -> None:
+    def test_anonymous_onboarding_shows_tutorial_oauth_button(self) -> None:
         request = SimpleNamespace(cookies={}, query_params={}, app=SimpleNamespace(state=SimpleNamespace(db=None)))
 
-        response = web.onboarding(request)
+        html = web.onboarding(request)
+
+        self.assertIn("먼저 Notion 작업실을 연결합니다.", html)
+        self.assertIn('href="/auth/notion/start?next=/onboarding?step=1"', html)
+
+    def test_anonymous_onboarding_later_steps_require_session(self) -> None:
+        request = SimpleNamespace(cookies={}, query_params={"step": "1"}, app=SimpleNamespace(state=SimpleNamespace(db=None)))
+
+        response = web.onboarding(request, step=1)
 
         self.assertEqual(response.status_code, 303)
         self.assertTrue(response.headers["location"].startswith("/?notice="))
@@ -467,6 +476,47 @@ class CoreTest(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertEqual(payload["plugins"], [{"id": "web", "max_results": 3, "engine": "parallel"}])
 
+    def test_openrouter_agent_settings_extend_prompt_and_live_search(self) -> None:
+        settings = settings_for(Path("unused.sqlite3"))
+        block = TextBlock(
+            page_id="page-1",
+            page_title="Page",
+            page_url="https://notion.so/page-1",
+            block_id="block-1",
+            block_type="paragraph",
+            plain_text="Use the old API.",
+            rich_text=[],
+            parent_block_id=None,
+            heading_path=[],
+            last_edited_time=utc_now_iso(),
+        )
+        captured: dict[str, object] = {}
+
+        def fake_request_json(*args: object, **kwargs: object) -> SimpleNamespace:
+            captured["payload"] = kwargs["payload"]
+            return SimpleNamespace(data={"choices": [{"message": {"content": "[]"}}]})
+
+        with patch("app.services.openrouter_service.request_json", fake_request_json):
+            OpenRouterService(settings).analyze_blocks(
+                "test-openrouter-key",
+                [block],
+                {},
+                {
+                    "additional_context": "시간복잡도와 최신 API 변경을 우선 확인해줘.",
+                    "search_recent_trends": 1,
+                    "openrouter_live_search": 1,
+                    "strict_source_mode": 1,
+                },
+            )
+
+        payload = captured["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload["plugins"], [{"id": "web", "max_results": 5}])
+        user_prompt = payload["messages"][1]["content"]
+        self.assertIn("USER_AGENT_CONTEXT", user_prompt)
+        self.assertIn("시간복잡도와 최신 API 변경", user_prompt)
+        self.assertIn("최근 동향", user_prompt)
+
     def test_onboarding_skips_scope_and_stages_email_flow(self) -> None:
         settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
         connection = {
@@ -549,11 +599,53 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("data-graph-fit", html)
         self.assertNotIn('value="/dashboard"', html)
         self.assertIn("run-board-row", html)
+        self.assertIn("data-proposal-dialog", html)
+        self.assertIn("home.js", html)
         self.assertIn("Roadmap", html)
+        self.assertNotIn("proposal-page", html)
         self.assertNotIn("page-head home-head", html)
         self.assertNotIn("다음 실행", html)
         self.assertNotIn("보완 필요 페이지", html)
         self.assertNotIn("승인 항목 반영", html)
+
+    def test_proposal_detail_payload_and_reject_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(Path(tmp) / "nocturne.sqlite3")
+            db = Database(settings)
+            db.initialize()
+            user = db.default_user()
+            db.execute(
+                """
+                INSERT INTO knowledge_graph_nodes
+                    (user_id, notion_object_id, object_type, title, url, first_seen_at, updated_at)
+                VALUES (?, 'page-1', 'page', 'Readable Title', '', ?, ?)
+                """,
+                (user["id"], utc_now_iso(), utc_now_iso()),
+            )
+            proposal_id = db.execute(
+                """
+                INSERT INTO proposals_cache
+                    (user_id, run_id, source_page_id, block_id, issue_type, apply_mode,
+                     original_sentence_hash, suggested_sentence_hash, original_sentence, suggested_sentence,
+                     rationale, source_urls, status, confidence, created_at)
+                VALUES (?, 'run-1', 'page-1', 'block-1', 'error', 'replace',
+                        'old', 'new', 'Old sentence.', 'New sentence.', 'Because.', '["https://example.com"]', '대기', 0.9, ?)
+                """,
+                (user["id"], utc_now_iso()),
+            )
+
+            detail = web._proposal_detail_payload(db, user["id"], proposal_id)
+
+            self.assertEqual(detail["title"], "Readable Title")
+            self.assertIn("## 추천 변경", detail["markdown"])
+            self.assertEqual(detail["sourceUrls"], ["https://example.com"])
+
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=db, notion=SimpleNamespace())))
+            message, status_code = web._reject_proposal_for_user(request, user["id"], proposal_id)
+
+            self.assertEqual(status_code, 200)
+            self.assertIn("거절", message)
+            self.assertEqual(db.row("SELECT status FROM proposals_cache WHERE id = ?", (proposal_id,))["status"], "거절")
 
     def test_runs_page_limit_selector_and_agent_error_summary(self) -> None:
         run = {
@@ -648,6 +740,24 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("페이지 설정", notification_html)
         self.assertNotIn("target-picker", notification_html)
         self.assertNotIn("계정/API", notification_html)
+
+        agent_html = ui.settings_page(
+            settings,
+            connection,
+            [],
+            {
+                "additional_context": "문서 톤을 유지해줘.",
+                "search_recent_trends": 1,
+                "openrouter_live_search": 0,
+                "strict_source_mode": 1,
+            },
+            selected_section="agent",
+        )
+        self.assertIn("Agent 설정", agent_html)
+        self.assertIn("문서 톤을 유지해줘.", agent_html)
+        self.assertIn("최근 동향", agent_html)
+        self.assertIn('name="search_recent_trends"', agent_html)
+        self.assertNotIn("페이지 설정", agent_html)
 
 
 if __name__ == "__main__":

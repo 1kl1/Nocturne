@@ -57,6 +57,20 @@ def _clear_session_cookie(response: RedirectResponse) -> None:
     response.delete_cookie(SESSION_COOKIE)
 
 
+def _anonymous_connection() -> dict[str, object]:
+    return {
+        "notion_access_token_encrypted": None,
+        "notion_workspace_id": "",
+        "notion_workspace_name": "",
+        "notification_email": "",
+        "notification_email_verified": 0,
+    }
+
+
+def _anonymous_settings() -> dict[str, object]:
+    return {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
+
+
 @router.get("/favicon.ico")
 def favicon() -> FileResponse:
     return FileResponse("app/static/nocturne-icon.svg", media_type="image/svg+xml")
@@ -94,7 +108,16 @@ def onboarding(request: Request, notice: str | None = None, step: int = 0) -> st
     db = request.app.state.db
     user = _current_user(request)
     if not user:
-        return _auth_redirect()
+        if "step" in request.query_params and step > 0:
+            return _auth_redirect()
+        return ui.onboarding_page(
+            _anonymous_connection(),
+            _anonymous_settings(),
+            [],
+            False,
+            notice,
+            0,
+        )
     connection = db.connection_for_user(user["id"])
     targets = db.active_targets(user["id"])
     if _onboarding_complete(connection, targets) and "step" not in request.query_params:
@@ -302,40 +325,46 @@ def approve_graph_proposal(request: Request, proposal_id: int) -> JSONResponse:
     user = _current_user(request)
     if not user:
         return _auth_json()
-    proposal = db.row(
-        """
-        SELECT * FROM proposals_cache
-        WHERE id = ? AND user_id = ?
-        LIMIT 1
-        """,
-        (proposal_id, user["id"]),
-    )
-    if not proposal:
-        return JSONResponse({"detail": "제안을 찾지 못했습니다."}, status_code=404)
-    if proposal["status"] == "반영됨":
-        payload = _knowledge_graph_payload(db, user["id"])
-        payload["message"] = "이미 반영된 제안입니다."
-        return JSONResponse(payload)
-    notion_page_id = proposal["notion_proposal_page_id"]
-    if not notion_page_id:
-        return JSONResponse({"detail": "Notion 제안 페이지 ID가 없습니다."}, status_code=400)
-    try:
-        request.app.state.notion.update_proposal_status(user["id"], notion_page_id, "승인")
-        db.update(
-            "UPDATE proposals_cache SET status = '승인', updated_at = ? WHERE id = ? AND user_id = ?",
-            (utc_now_iso(), proposal_id, user["id"]),
-        )
-        applied, failed = request.app.state.harness.apply_approved_for_user(user["id"])
-        db.log(
-            "knowledge_graph_proposal_approved",
-            user_id=user["id"],
-            payload={"proposal_id": proposal_id, "notion_page_id": notion_page_id, "applied": applied, "failed": failed},
-        )
-    except Exception as exc:
-        return JSONResponse({"detail": f"제안 승인 실패: {exc}"}, status_code=400)
+    message, status_code = _approve_proposal_for_user(request, user["id"], proposal_id)
     payload = _knowledge_graph_payload(db, user["id"])
-    payload["message"] = f"승인 반영 완료: 성공 {applied}건, 실패 {failed}건"
+    payload["message"] = message
+    return JSONResponse(payload, status_code=status_code)
+
+
+@router.get("/api/proposals/{proposal_id}")
+def proposal_detail(request: Request, proposal_id: int) -> JSONResponse:
+    db = request.app.state.db
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
+    payload = _proposal_detail_payload(db, user["id"], proposal_id)
+    if not payload:
+        return JSONResponse({"detail": "제안을 찾지 못했습니다."}, status_code=404)
     return JSONResponse(payload)
+
+
+@router.post("/api/proposals/{proposal_id}/approve")
+def approve_proposal(request: Request, proposal_id: int) -> JSONResponse:
+    db = request.app.state.db
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
+    message, status_code = _approve_proposal_for_user(request, user["id"], proposal_id)
+    payload = _proposal_detail_payload(db, user["id"], proposal_id) or {}
+    payload["message"] = message
+    return JSONResponse(payload, status_code=status_code)
+
+
+@router.post("/api/proposals/{proposal_id}/reject")
+def reject_proposal(request: Request, proposal_id: int) -> JSONResponse:
+    db = request.app.state.db
+    user = _current_user(request)
+    if not user:
+        return _auth_json()
+    message, status_code = _reject_proposal_for_user(request, user["id"], proposal_id)
+    payload = _proposal_detail_payload(db, user["id"], proposal_id) or {}
+    payload["message"] = message
+    return JSONResponse(payload, status_code=status_code)
 
 
 @router.post("/targets")
@@ -411,6 +440,7 @@ def settings_page(request: Request, notice: str | None = None, section: str = "p
         db.notification_settings_for_user(user["id"]),
         db.connection_for_user(user["id"]),
         db.active_targets(user["id"]),
+        db.agent_settings_for_user(user["id"]),
         notice,
         request.app.state.settings.openrouter_configured,
         request.app.state.settings.openrouter_default_model,
@@ -421,6 +451,11 @@ def settings_page(request: Request, notice: str | None = None, section: str = "p
 @router.get("/notifications", response_class=HTMLResponse)
 def notifications(request: Request, notice: str | None = None) -> str:
     return settings_page(request, notice, "notifications")
+
+
+@router.get("/agent", response_class=HTMLResponse)
+def agent_settings(request: Request, notice: str | None = None) -> str:
+    return settings_page(request, notice, "agent")
 
 
 @router.post("/notifications")
@@ -446,6 +481,42 @@ def update_notifications(
     )
     db.update("UPDATE users SET timezone = ? WHERE id = ?", (timezone, user["id"]))
     return _redirect(_safe_return(return_to, "/settings"), "알림 설정을 저장했습니다.")
+
+
+@router.post("/settings/agent")
+def update_agent_settings(
+    request: Request,
+    additional_context: str = Form(""),
+    search_recent_trends: str | None = Form(None),
+    openrouter_live_search: str | None = Form(None),
+    strict_source_mode: str | None = Form(None),
+    return_to: str = Form(""),
+) -> RedirectResponse:
+    db = request.app.state.db
+    user = _current_user(request)
+    if not user:
+        return _auth_redirect()
+    db.agent_settings_for_user(user["id"])
+    db.update(
+        """
+        UPDATE agent_settings
+        SET additional_context = ?,
+            search_recent_trends = ?,
+            openrouter_live_search = ?,
+            strict_source_mode = ?,
+            updated_at = ?
+        WHERE user_id = ?
+        """,
+        (
+            additional_context.strip(),
+            1 if search_recent_trends else 0,
+            1 if openrouter_live_search else 0,
+            1 if strict_source_mode else 0,
+            utc_now_iso(),
+            user["id"],
+        ),
+    )
+    return _redirect(_safe_return(return_to, "/settings?section=agent"), "Agent 설정을 저장했습니다.")
 
 
 @router.get("/runs", response_class=HTMLResponse)
@@ -616,6 +687,7 @@ def delete_local_data(request: Request) -> RedirectResponse:
             "audit_logs",
             "notification_settings",
             "onboarding_progress",
+            "agent_settings",
         ]:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user["id"],))
         conn.execute("DELETE FROM users WHERE id = ?", (user["id"],))
@@ -697,9 +769,10 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
         SELECT
             'proposal' AS item_kind,
             pc.id AS item_id,
+            pc.id AS proposal_cache_id,
             pc.run_id,
             pc.source_page_id,
-            COALESCE(st.title, '') AS source_title,
+            COALESCE(kgn.title, st.title, '') AS source_title,
             pc.issue_type,
             pc.apply_mode,
             pc.status,
@@ -707,6 +780,8 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
             pc.created_at AS happened_at,
             pc.notion_proposal_page_id
         FROM proposals_cache pc
+        LEFT JOIN knowledge_graph_nodes kgn
+          ON kgn.user_id = pc.user_id AND kgn.notion_object_id = pc.source_page_id
         LEFT JOIN scan_targets st
           ON st.user_id = pc.user_id AND st.notion_object_id = pc.source_page_id
         WHERE pc.user_id = ?
@@ -722,9 +797,10 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
         SELECT
             'applied' AS item_kind,
             ne.id AS item_id,
+            pc.id AS proposal_cache_id,
             COALESCE(pc.run_id, '') AS run_id,
             ne.source_page_id,
-            COALESCE(st.title, '') AS source_title,
+            COALESCE(kgn.title, st.title, '') AS source_title,
             COALESCE(pc.issue_type, '') AS issue_type,
             COALESCE(pc.apply_mode, '') AS apply_mode,
             COALESCE(pc.status, '반영됨') AS status,
@@ -734,6 +810,8 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
         FROM nocturne_edits ne
         LEFT JOIN proposals_cache pc
           ON pc.user_id = ne.user_id AND pc.notion_proposal_page_id = ne.proposal_id
+        LEFT JOIN knowledge_graph_nodes kgn
+          ON kgn.user_id = ne.user_id AND kgn.notion_object_id = ne.source_page_id
         LEFT JOIN scan_targets st
           ON st.user_id = ne.user_id AND st.notion_object_id = ne.source_page_id
         WHERE ne.user_id = ?
@@ -746,6 +824,150 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
     )
     rows = list(applied_rows) + list(proposal_rows)
     return sorted(rows, key=lambda row: row["happened_at"] or "", reverse=True)[:60]
+
+
+def _proposal_detail_payload(db: object, user_id: int, proposal_id: int) -> dict[str, object] | None:
+    row = db.row(
+        """
+        SELECT
+            pc.*,
+            COALESCE(kgn.title, st.title, '') AS source_title,
+            COALESCE(kgn.url, st.url, '') AS source_url
+        FROM proposals_cache pc
+        LEFT JOIN knowledge_graph_nodes kgn
+          ON kgn.user_id = pc.user_id AND kgn.notion_object_id = pc.source_page_id
+        LEFT JOIN scan_targets st
+          ON st.user_id = pc.user_id AND st.notion_object_id = pc.source_page_id
+        WHERE pc.user_id = ? AND pc.id = ?
+        LIMIT 1
+        """,
+        (user_id, proposal_id),
+    )
+    if not row:
+        return None
+    issue_label = ui.ISSUE_LABELS.get(row["issue_type"] or "", row["issue_type"] or "제안")
+    apply_label = ui.APPLY_LABELS.get(row["apply_mode"] or "", row["apply_mode"] or "")
+    title = row["source_title"] or f'페이지 {str(row["source_page_id"] or "")[-8:]}'
+    original = row["original_sentence"] or ""
+    suggested = row["suggested_sentence"] or ""
+    rationale = row["rationale"] or ""
+    source_urls = _decode_string_list(row["source_urls"])
+    markdown = _proposal_markdown(title, issue_label, apply_label, original, suggested, rationale, source_urls)
+    return {
+        "id": row["id"],
+        "runId": row["run_id"] or "",
+        "title": title,
+        "sourcePageId": row["source_page_id"] or "",
+        "sourceUrl": row["source_url"] or "",
+        "issueType": row["issue_type"] or "",
+        "issueLabel": issue_label,
+        "applyMode": row["apply_mode"] or "",
+        "applyLabel": apply_label,
+        "status": row["status"] or "",
+        "confidence": float(row["confidence"] or 0),
+        "originalSentence": original,
+        "suggestedSentence": suggested,
+        "rationale": rationale,
+        "sourceUrls": source_urls,
+        "markdown": markdown,
+        "createdAt": row["created_at"] or "",
+        "updatedAt": row["updated_at"] or "",
+        "canDecide": row["status"] not in {"거절", "반영됨"},
+    }
+
+
+def _proposal_markdown(
+    title: str,
+    issue_label: str,
+    apply_label: str,
+    original: str,
+    suggested: str,
+    rationale: str,
+    source_urls: list[str],
+) -> str:
+    lines = [
+        f"# {title}",
+        "",
+        "## 제안 요약",
+        f"- 유형: {issue_label}",
+    ]
+    if apply_label:
+        lines.append(f"- 방식: {apply_label}")
+    if original:
+        lines.extend(["", "## 현재 문장", f"> {original}"])
+    if suggested:
+        lines.extend(["", "## 추천 변경", suggested])
+    if rationale:
+        lines.extend(["", "## 근거", rationale])
+    if source_urls:
+        lines.append("")
+        lines.append("## 출처")
+        lines.extend(f"- {url}" for url in source_urls)
+    return "\n".join(lines)
+
+
+def _approve_proposal_for_user(request: Request, user_id: int, proposal_id: int) -> tuple[str, int]:
+    db = request.app.state.db
+    proposal = db.row(
+        """
+        SELECT * FROM proposals_cache
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (proposal_id, user_id),
+    )
+    if not proposal:
+        return "제안을 찾지 못했습니다.", 404
+    if proposal["status"] == "반영됨":
+        return "이미 반영된 제안입니다.", 200
+    if proposal["status"] == "거절":
+        return "거절된 제안입니다.", 400
+    notion_page_id = proposal["notion_proposal_page_id"]
+    if not notion_page_id:
+        return "Notion 제안 페이지 ID가 없습니다.", 400
+    try:
+        request.app.state.notion.update_proposal_status(user_id, notion_page_id, "승인")
+        db.update(
+            "UPDATE proposals_cache SET status = '승인', updated_at = ? WHERE id = ? AND user_id = ?",
+            (utc_now_iso(), proposal_id, user_id),
+        )
+        applied, failed = request.app.state.harness.apply_approved_for_user(user_id)
+        db.log(
+            "proposal_approved",
+            user_id=user_id,
+            payload={"proposal_id": proposal_id, "notion_page_id": notion_page_id, "applied": applied, "failed": failed},
+        )
+        return f"승인 반영 완료: 성공 {applied}건, 실패 {failed}건", 200
+    except Exception as exc:
+        return f"제안 승인 실패: {exc}", 400
+
+
+def _reject_proposal_for_user(request: Request, user_id: int, proposal_id: int) -> tuple[str, int]:
+    db = request.app.state.db
+    proposal = db.row(
+        """
+        SELECT * FROM proposals_cache
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (proposal_id, user_id),
+    )
+    if not proposal:
+        return "제안을 찾지 못했습니다.", 404
+    if proposal["status"] == "반영됨":
+        return "이미 반영된 제안입니다.", 400
+    try:
+        notion_page_id = proposal["notion_proposal_page_id"]
+        if notion_page_id:
+            request.app.state.notion.update_proposal_status(user_id, notion_page_id, "거절")
+        db.update(
+            "UPDATE proposals_cache SET status = '거절', updated_at = ? WHERE id = ? AND user_id = ?",
+            (utc_now_iso(), proposal_id, user_id),
+        )
+        db.log("proposal_rejected_by_user", user_id=user_id, payload={"proposal_id": proposal_id, "notion_page_id": notion_page_id})
+        return "제안을 거절했습니다.", 200
+    except Exception as exc:
+        return f"제안 거절 실패: {exc}", 400
 
 
 def _knowledge_graph_payload(db: object, user_id: int) -> dict[str, object]:

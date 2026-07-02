@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702o"
+ASSET_VERSION = "20260702q"
 
 
 EVENT_LABELS = {
@@ -128,7 +128,7 @@ def intro_page(notice: str | None = None) -> str:
     <section class="intro-hero" aria-labelledby="intro-title">
       <img class="intro-icon" src="/static/nocturne-icon.svg" alt="">
       <h1 id="intro-title">Nocturne</h1>
-      <a class="start-button" href="/auth/notion/start?next=%2Fonboarding%3Fstep%3D1">
+      <a class="start-button" href="/onboarding">
         <span>시작하기</span>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l8 7-8 7V5Z"/></svg>
       </a>
@@ -312,10 +312,12 @@ def dashboard(
 <section class="panel home-run-panel">
   <div class="panel-head"><h2>최근 실행</h2><a href="/runs">로그 보기</a></div>
   {_home_run_summary(latest_run, timezone_name)}
-  {_run_item_board(run_items, timezone_name)}
+{_run_item_board(run_items, timezone_name)}
+{_proposal_detail_modal()}
 </section>
 <script src="https://cdn.jsdelivr.net/npm/force-graph/dist/force-graph.min.js"></script>
 <script src="/static/knowledge-graph.js?v={ASSET_VERSION}"></script>
+<script src="/static/home.js?v={ASSET_VERSION}"></script>
 """
     return page("홈", body, "home", notice)
 
@@ -412,18 +414,47 @@ def _run_item_row(row: sqlite3.Row, timezone_name: str) -> str:
     apply = APPLY_LABELS.get(row["apply_mode"] or "", row["apply_mode"] or "")
     detail = " · ".join(part for part in [issue, apply] if part)
     status = row["status"] or ("반영됨" if kind == "applied" else "-")
-    href = _notion_page_url(row["notion_proposal_page_id"]) or _notion_page_url(page_id)
+    proposal_id = _optional_row_value(row, "proposal_cache_id")
     tag_cls = "applied" if kind == "applied" else "proposal"
     inner = f"""
   <span class="run-item-kind {tag_cls}">{_escape(kind_label)}</span>
-  <span class="run-item-title"><strong>{_escape(title)}</strong><small>{_escape(_short_page_id(page_id))}</small></span>
+  <span class="run-item-title"><strong>{_escape(title)}</strong></span>
   <span class="run-item-detail">{_escape(detail)}</span>
   <span class="run-item-status">{_escape(status)}</span>
   <span class="run-item-time">{_relative_time_html(row["happened_at"], timezone_name)}</span>
 """
-    if href:
-        return f'<a class="run-board-row" role="listitem" href="{_escape(href)}" target="_blank" rel="noreferrer">{inner}</a>'
+    if proposal_id:
+        return (
+            f'<button class="run-board-row" role="listitem" type="button" '
+            f'data-proposal-id="{_escape(proposal_id)}" data-page-id="{_escape(page_id)}">{inner}</button>'
+        )
     return f'<div class="run-board-row" role="listitem">{inner}</div>'
+
+
+def _proposal_detail_modal() -> str:
+    return """
+<dialog class="proposal-dialog" data-proposal-dialog>
+  <div class="proposal-dialog-box">
+    <header>
+      <div>
+        <p class="eyebrow">Agent 제안</p>
+        <h2 data-proposal-dialog-title>제안 상세</h2>
+      </div>
+      <button class="icon-button" type="button" data-proposal-close aria-label="닫기">&times;</button>
+    </header>
+    <div class="proposal-dialog-meta" data-proposal-dialog-meta></div>
+    <div class="proposal-dialog-scroll">
+      <section class="proposal-diff" data-proposal-dialog-diff></section>
+      <section class="notion-render" data-proposal-dialog-render></section>
+    </div>
+    <footer>
+      <span data-proposal-dialog-message></span>
+      <button class="ghost" type="button" data-proposal-reject>거부</button>
+      <button class="primary" type="button" data-proposal-approve>승인</button>
+    </footer>
+  </div>
+</dialog>
+"""
 
 
 def _count_text(value: object) -> str:
@@ -506,18 +537,20 @@ def settings_page(
     settings: sqlite3.Row,
     connection: sqlite3.Row,
     targets: list[sqlite3.Row],
+    agent_settings: sqlite3.Row | dict[str, object] | None = None,
     notice: str | None = None,
     openrouter_configured: bool = False,
     openrouter_model: str = "",
     selected_section: str = "pages",
 ) -> str:
     rows = "".join(target_row(target) for target in targets) or '<tr><td colspan="7" class="empty">등록된 대상이 없습니다.</td></tr>'
-    current = "notifications" if selected_section == "notifications" else "pages"
-    settings_view = (
-        _settings_notifications_view(settings, connection)
-        if current == "notifications"
-        else _settings_pages_view(connection, rows)
-    )
+    current = selected_section if selected_section in {"pages", "notifications", "agent"} else "pages"
+    if current == "notifications":
+        settings_view = _settings_notifications_view(settings, connection)
+    elif current == "agent":
+        settings_view = _settings_agent_view(agent_settings, openrouter_configured, openrouter_model)
+    else:
+        settings_view = _settings_pages_view(connection, rows)
     body = f"""
 <section class="page-head">
   <div>
@@ -529,6 +562,7 @@ def settings_page(
 <nav class="settings-switch" aria-label="설정 섹션">
   <a class="{"active" if current == "pages" else ""}" href="/settings?section=pages">페이지</a>
   <a class="{"active" if current == "notifications" else ""}" href="/settings?section=notifications">알림</a>
+  <a class="{"active" if current == "agent" else ""}" href="/settings?section=agent">Agent</a>
 </nav>
 
 {settings_view}
@@ -605,6 +639,42 @@ def _settings_notifications_view(settings: sqlite3.Row, connection: sqlite3.Row)
       <button type="submit">인증</button>
     </form>
   </div>
+</section>
+"""
+
+
+def _settings_agent_view(agent_settings: sqlite3.Row | dict[str, object] | None, openrouter_configured: bool, openrouter_model: str) -> str:
+    context = _optional_row_value(agent_settings or {}, "additional_context", "")
+    search_recent = bool(_optional_row_value(agent_settings or {}, "search_recent_trends", 0))
+    live_search = bool(_optional_row_value(agent_settings or {}, "openrouter_live_search", 0))
+    strict_source = bool(_optional_row_value(agent_settings or {}, "strict_source_mode", 1))
+    return f"""
+<section class="panel settings-section settings-view" id="agent">
+  <div class="panel-head">
+    <h2>Agent 설정</h2>
+    <span class="pill {"ok" if openrouter_configured else "warn"}">{_escape(openrouter_model or "OpenRouter 설정 필요")}</span>
+  </div>
+  <form class="agent-settings-form" method="post" action="/settings/agent">
+    <input type="hidden" name="return_to" value="/settings?section=agent">
+    <label>추가 맥락과 요청
+      <textarea name="additional_context" rows="8" placeholder="예: PS 문제풀이 문서는 증명보다 시간복잡도와 반례를 우선 검토해줘.">{_escape(context)}</textarea>
+    </label>
+    <div class="agent-option-list">
+      <label class="checkline">
+        <input type="checkbox" name="search_recent_trends" value="1" {"checked" if search_recent else ""}>
+        <span>문서와 관련된 최근 동향을 검색해서 제안에 반영</span>
+      </label>
+      <label class="checkline">
+        <input type="checkbox" name="openrouter_live_search" value="1" {"checked" if live_search else ""}>
+        <span>OpenRouter live web 컨텍스트 사용</span>
+      </label>
+      <label class="checkline">
+        <input type="checkbox" name="strict_source_mode" value="1" {"checked" if strict_source else ""}>
+        <span>명확한 근거가 있는 제안만 남김</span>
+      </label>
+    </div>
+    <button class="primary" type="submit">저장</button>
+  </form>
 </section>
 """
 

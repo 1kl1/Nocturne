@@ -389,6 +389,8 @@ h2 {
 
 .graph-inspector {
   min-width: 0;
+  max-height: calc(100vh - 150px);
+  overflow: auto;
   padding: 16px;
   border-left: 1px solid rgba(255, 255, 255, 0.14);
   background: #15181e;
@@ -453,6 +455,7 @@ h2 {
   color: #f5f7fb;
   font-size: 13px;
   line-height: 1.4;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -464,6 +467,43 @@ h2 {
 
 .graph-inspector-actions:empty {
   display: none;
+}
+
+.graph-proposal-diff dd {
+  display: grid;
+  gap: 6px;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.diff-line span {
+  font-weight: 850;
+}
+
+.diff-line p {
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.diff-line.remove {
+  background: rgba(255, 95, 95, 0.12);
+  color: #ffd7d7;
+}
+
+.diff-line.add {
+  background: rgba(70, 201, 137, 0.13);
+  color: #d9ffe9;
 }
 
 .run-overview {
@@ -549,6 +589,15 @@ h2 {
   min-height: 58px;
   border-bottom: 1px solid #d7ddd8;
   color: #111;
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
 }
 
 .run-board-row:hover {
@@ -614,6 +663,147 @@ h2 {
 .run-board-empty span {
   color: #68726d;
   margin-top: 4px;
+}
+
+.proposal-dialog {
+  width: min(820px, calc(100vw - 28px));
+  max-height: min(820px, calc(100vh - 28px));
+  border: 1px solid #111;
+  border-radius: 8px;
+  padding: 0;
+  color: #111;
+  background: #fffef8;
+  box-shadow: 12px 12px 0 #111;
+}
+
+.proposal-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.36);
+}
+
+.proposal-dialog-box {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  max-height: min(820px, calc(100vh - 28px));
+}
+
+.proposal-dialog header,
+.proposal-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+}
+
+.proposal-dialog header {
+  border-bottom: 1px solid #d7ddd8;
+}
+
+.proposal-dialog h2 {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.proposal-dialog-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px 0;
+}
+
+.proposal-dialog-meta span {
+  border: 1px solid #d7ddd8;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #4f5c54;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.proposal-dialog-scroll {
+  display: grid;
+  gap: 14px;
+  overflow: auto;
+  padding: 16px;
+}
+
+.proposal-dialog .proposal-diff {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d7ddd8;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.proposal-dialog .proposal-diff[hidden] {
+  display: none;
+}
+
+.proposal-dialog .proposal-diff h3 {
+  font-size: 14px;
+}
+
+.proposal-dialog .diff-line.remove {
+  background: #fff0f0;
+  color: #8f2525;
+}
+
+.proposal-dialog .diff-line.add {
+  background: #edf9f2;
+  color: #176348;
+}
+
+.notion-render {
+  display: grid;
+  gap: 10px;
+}
+
+.notion-render h1 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.notion-render h2 {
+  margin-top: 4px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.notion-render p,
+.notion-render li,
+.notion-render blockquote {
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.notion-render ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.notion-render blockquote {
+  margin: 0;
+  border-left: 3px solid #111;
+  padding: 8px 10px;
+  background: #f7f8f2;
+}
+
+.proposal-dialog footer {
+  border-top: 1px solid #d7ddd8;
+}
+
+.proposal-dialog footer span {
+  min-width: 0;
+  margin-right: auto;
+  color: #4f5c54;
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.proposal-dialog footer span[data-tone="error"] {
+  color: #8f2525;
 }
 
 .settings-switch {
@@ -870,7 +1060,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 40px;
   border: 1px solid #cbd3cf;
@@ -879,6 +1070,12 @@ select {
   color: var(--ink);
   background: white;
   font: inherit;
+}
+
+textarea {
+  min-height: 148px;
+  resize: vertical;
+  line-height: 1.5;
 }
 
 .checkline {
@@ -891,6 +1088,30 @@ select {
 .checkline input {
   width: 16px;
   min-height: 16px;
+}
+
+.agent-settings-form {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-option-list {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #d7ddd8;
+  border-bottom: 1px solid #d7ddd8;
+  padding: 12px 0;
+}
+
+.agent-option-list .checkline {
+  justify-content: start;
+  align-items: start;
+  min-height: 28px;
+  color: #27312c;
+}
+
+.agent-option-list .checkline span {
+  line-height: 1.45;
 }
 
 .target-picker {

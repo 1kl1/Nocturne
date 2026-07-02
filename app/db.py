@@ -54,6 +54,19 @@ SCHEMA: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS agent_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL UNIQUE,
+        additional_context TEXT NOT NULL DEFAULT '',
+        search_recent_trends INTEGER NOT NULL DEFAULT 0,
+        openrouter_live_search INTEGER NOT NULL DEFAULT 0,
+        strict_source_mode INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS scan_targets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -262,6 +275,14 @@ class Database:
             """,
             (user_id, now, now),
         )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO agent_settings
+                (user_id, additional_context, search_recent_trends, openrouter_live_search, strict_source_mode, created_at, updated_at)
+            VALUES (?, '', 0, 0, 1, ?, ?)
+            """,
+            (user_id, now, now),
+        )
 
     def _ensure_schema_compat(self, conn: sqlite3.Connection) -> None:
         proposal_columns = {row["name"] for row in conn.execute("PRAGMA table_info(proposals_cache)").fetchall()}
@@ -340,6 +361,14 @@ class Database:
                 INSERT INTO notification_settings
                     (user_id, default_channel, notify_time, scan_time, timezone, notify_zero, created_at, updated_at)
                 VALUES (?, 'email', '08:00', '02:00', 'Asia/Seoul', 1, ?, ?)
+                """,
+                (user_id, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_settings
+                    (user_id, additional_context, search_recent_trends, openrouter_live_search, strict_source_mode, created_at, updated_at)
+                VALUES (?, '', 0, 0, 1, ?, ?)
                 """,
                 (user_id, now, now),
             )
@@ -423,6 +452,20 @@ class Database:
             (user_id, now, now),
         )
         row = self.row("SELECT * FROM notification_settings WHERE user_id = ?", (user_id,))
+        assert row is not None
+        return row
+
+    def agent_settings_for_user(self, user_id: int) -> sqlite3.Row:
+        now = utc_now_iso()
+        self.execute(
+            """
+            INSERT OR IGNORE INTO agent_settings
+                (user_id, additional_context, search_recent_trends, openrouter_live_search, strict_source_mode, created_at, updated_at)
+            VALUES (?, '', 0, 0, 1, ?, ?)
+            """,
+            (user_id, now, now),
+        )
+        row = self.row("SELECT * FROM agent_settings WHERE user_id = ?", (user_id,))
         assert row is not None
         return row
 
