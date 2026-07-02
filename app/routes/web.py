@@ -265,7 +265,7 @@ def delete_target(request: Request, target_id: int) -> RedirectResponse:
 
 
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, notice: str | None = None) -> str:
+def settings_page(request: Request, notice: str | None = None, section: str = "pages") -> str:
     db = request.app.state.db
     user = db.default_user()
     return ui.settings_page(
@@ -275,12 +275,13 @@ def settings_page(request: Request, notice: str | None = None) -> str:
         notice,
         request.app.state.settings.openrouter_configured,
         request.app.state.settings.openrouter_default_model,
+        section,
     )
 
 
 @router.get("/notifications", response_class=HTMLResponse)
 def notifications(request: Request, notice: str | None = None) -> str:
-    return settings_page(request, notice)
+    return settings_page(request, notice, "notifications")
 
 
 @router.post("/notifications")
@@ -336,7 +337,7 @@ def apply_approved(request: Request, return_to: str = Form("")) -> RedirectRespo
 
 @router.get("/account", response_class=HTMLResponse)
 def account(request: Request, notice: str | None = None) -> str:
-    return settings_page(request, notice)
+    return settings_page(request, notice, "pages")
 
 
 @router.post("/account/disconnect/notion")
@@ -359,7 +360,7 @@ def disconnect_notion(request: Request) -> RedirectResponse:
         (utc_now_iso(), user["id"]),
     )
     db.log("notion_disconnected", user_id=user["id"])
-    return _redirect("/settings", "Notion 연결을 해제했습니다.")
+    return _redirect("/settings?section=pages", "Notion 연결을 해제했습니다.")
 
 
 @router.post("/account/delete-local-data")

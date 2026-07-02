@@ -306,6 +306,31 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("보완 필요 페이지", html)
         self.assertNotIn("승인 항목 반영", html)
 
+    def test_settings_switches_one_section_and_nav_uses_icons(self) -> None:
+        settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
+        connection = {
+            "notion_access_token_encrypted": "token",
+            "notion_workspace_name": "My Life",
+            "notion_workspace_id": "workspace-1",
+            "notification_email": "me@example.com",
+            "notification_email_verified": 1,
+        }
+
+        page_html = ui.settings_page(settings, connection, [], selected_section="pages")
+        self.assertIn("icon-nav", page_html)
+        self.assertIn("<svg", page_html)
+        self.assertIn("페이지 설정", page_html)
+        self.assertIn("로그아웃", page_html)
+        self.assertNotIn("알림 설정", page_html)
+        self.assertNotIn("계정/API", page_html)
+        self.assertNotIn("OpenRouter", page_html)
+
+        notification_html = ui.settings_page(settings, connection, [], selected_section="notifications")
+        self.assertIn("알림 설정", notification_html)
+        self.assertNotIn("페이지 설정", notification_html)
+        self.assertNotIn("target-picker", notification_html)
+        self.assertNotIn("계정/API", notification_html)
+
 
 if __name__ == "__main__":
     unittest.main()

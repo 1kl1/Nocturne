@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702f"
+ASSET_VERSION = "20260702g"
 
 
 EVENT_LABELS = {
@@ -61,15 +61,16 @@ def _escape(value: object) -> str:
 
 def page(title: str, body: str, active: str = "home", notice: str | None = None) -> str:
     nav = [
-        ("home", "/dashboard", "홈"),
-        ("logs", "/runs", "로그"),
-        ("settings", "/settings", "설정"),
+        ("home", "/dashboard", "홈", "home"),
+        ("logs", "/runs", "로그", "logs"),
+        ("settings", "/settings", "설정", "settings"),
     ]
     nav_html = "".join(
-        f'<a class="nav-link {"active" if key == active else ""}" href="{href}"><span>{label}</span></a>'
-        for key, href, label in nav
+        f'<a class="nav-link icon-nav {"active" if key == active else ""}" href="{href}" aria-label="{label}" title="{label}">{_nav_icon(icon)}<span class="sr-only">{label}</span></a>'
+        for key, href, label, icon in nav
     )
     notice_html = f'<div class="notice">{_escape(notice)}</div>' if notice else ""
+    target_picker_script = f'<script src="/static/target-picker.js?v={ASSET_VERSION}"></script>' if "data-target-picker" in body else ""
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -88,9 +89,18 @@ def page(title: str, body: str, active: str = "home", notice: str | None = None)
     {notice_html}
     {body}
   </main>
-  <script src="/static/target-picker.js?v={ASSET_VERSION}"></script>
+  {target_picker_script}
 </body>
 </html>"""
+
+
+def _nav_icon(name: str) -> str:
+    paths = {
+        "home": '<path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-8.5Z"/>',
+        "logs": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+        "settings": '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.05.05a2 2 0 1 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.07A1.7 1.7 0 0 0 8.6 19a1.7 1.7 0 0 0-1.88.34l-.05.05a2 2 0 1 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.8a2 2 0 1 1 0-4h.07A1.7 1.7 0 0 0 4.6 8a1.7 1.7 0 0 0-.34-1.88l-.05-.05a2 2 0 1 1 2.83-2.83l.05.05A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V2.8a2 2 0 1 1 4 0v.07A1.7 1.7 0 0 0 15.4 5a1.7 1.7 0 0 0 1.88-.34l.05-.05a2 2 0 1 1 2.83 2.83l-.05.05A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1a2 2 0 1 1 0 4h-.07a1.7 1.7 0 0 0-1.73.6Z"/>',
+    }
+    return f'<svg viewBox="0 0 24 24" aria-hidden="true">{paths.get(name, "")}</svg>'
 
 
 def status_pill(connected: bool, yes: str = "연결됨", no: str = "필요") -> str:
@@ -466,25 +476,48 @@ def settings_page(
     notice: str | None = None,
     openrouter_configured: bool = False,
     openrouter_model: str = "",
+    selected_section: str = "pages",
 ) -> str:
     rows = "".join(target_row(target) for target in targets) or '<tr><td colspan="7" class="empty">등록된 대상이 없습니다.</td></tr>'
+    current = "notifications" if selected_section == "notifications" else "pages"
+    settings_view = (
+        _settings_notifications_view(settings, connection)
+        if current == "notifications"
+        else _settings_pages_view(connection, rows)
+    )
     body = f"""
 <section class="page-head">
   <div>
-    <p class="eyebrow">점검 범위와 알림, 계정 연결</p>
+    <p class="eyebrow">필요한 설정만 열어 둡니다</p>
     <h1>설정</h1>
   </div>
 </section>
 
-<nav class="settings-tabs" aria-label="설정 섹션">
-  <a href="#pages">페이지</a>
-  <a href="#notifications">알림</a>
-  <a href="#account">계정/API</a>
+<nav class="settings-switch" aria-label="설정 섹션">
+  <a class="{"active" if current == "pages" else ""}" href="/settings?section=pages">페이지</a>
+  <a class="{"active" if current == "notifications" else ""}" href="/settings?section=notifications">알림</a>
 </nav>
 
-<section class="panel settings-section" id="pages">
+{settings_view}
+"""
+    return page("설정", body, "settings", notice)
+
+
+def _settings_pages_view(connection: sqlite3.Row, rows: str) -> str:
+    return f"""
+<section class="panel settings-section settings-view" id="pages">
   <div class="panel-head"><h2>페이지 설정</h2></div>
+  <div class="settings-connection-line">
+    <span>Notion</span>
+    <strong>{_escape(connection["notion_workspace_name"] or connection["notion_workspace_id"] or "연결 대기")}</strong>
+    {status_pill(bool(connection["notion_access_token_encrypted"]))}
+    <div class="settings-inline-actions">
+      <a class="button primary" href="/auth/notion/start?next=/settings?section=pages">연결</a>
+      <form method="post" action="/account/disconnect/notion"><button class="ghost" type="submit">로그아웃</button></form>
+    </div>
+  </div>
   <form class="form-grid target-picker-form" method="post" action="/targets" data-target-form>
+    <input type="hidden" name="return_to" value="/settings?section=pages">
     {target_picker_fields()}
     <label>제외 페이지 ID
       <input name="excluded_page_ids" placeholder="쉼표로 구분">
@@ -498,10 +531,15 @@ def settings_page(
     </table>
   </div>
 </section>
+"""
 
-<section class="panel settings-section" id="notifications">
+
+def _settings_notifications_view(settings: sqlite3.Row, connection: sqlite3.Row) -> str:
+    return f"""
+<section class="panel settings-section settings-view" id="notifications">
   <div class="panel-head"><h2>알림 설정</h2></div>
   <form class="form-grid" method="post" action="/notifications">
+    <input type="hidden" name="return_to" value="/settings?section=notifications">
     <input type="hidden" name="default_channel" value="email">
     <input type="hidden" name="notify_zero" value="1">
     <label>야간 점검 시각
@@ -515,53 +553,30 @@ def settings_page(
     </label>
     <button class="primary" type="submit">저장</button>
   </form>
-  <div class="settings-duo single">
-    <div class="settings-subpanel">
-      <div class="panel-head"><h2>이메일</h2>{status_pill(bool(connection["notification_email_verified"]))}</div>
-      <form class="stack" method="post" action="/settings/email">
-        <label>수신 주소
-          <input name="email" type="email" value="{_escape(connection["notification_email"] or "")}">
-        </label>
-        <button type="submit">인증 코드 발송</button>
-      </form>
-      <form class="stack compact" method="post" action="/settings/email/verify">
-        <label>인증 코드
-          <input name="code" inputmode="numeric">
-        </label>
-        <button type="submit">인증 완료</button>
-      </form>
-    </div>
+  <div class="settings-divider"></div>
+  <div class="settings-email-line">
+    <span>이메일</span>
+    <strong>{_escape(connection["notification_email"] or "수신 주소")}</strong>
+    {status_pill(bool(connection["notification_email_verified"]))}
   </div>
-</section>
-
-<section class="panel settings-section" id="account">
-  <div class="panel-head"><h2>계정/API</h2></div>
-  <div class="settings-duo">
-    <div class="settings-subpanel">
-      <div class="panel-head"><h2>Notion</h2>{status_pill(bool(connection["notion_access_token_encrypted"]))}</div>
-      <dl class="kv">
-        <dt>워크스페이스</dt><dd>{_escape(connection["notion_workspace_name"] or connection["notion_workspace_id"] or "-")}</dd>
-        <dt>수정함</dt><dd>{_escape(connection["notion_inbox_url"] or connection["notion_inbox_database_id"] or "-")}</dd>
-      </dl>
-      <div class="actions">
-        <a class="button primary" href="/auth/notion/start?next=/settings">Notion 연결</a>
-        <form method="post" action="/account/disconnect/notion"><button class="ghost" type="submit">연결 해제</button></form>
-      </div>
-    </div>
-    <div class="settings-subpanel">
-      <div class="panel-head"><h2>OpenRouter</h2>{status_pill(openrouter_configured, "서버 설정", "필요")}</div>
-      <dl class="kv">
-        <dt>API 키</dt><dd>환경변수 <code>OPENROUTER_API_KEY</code></dd>
-        <dt>모델</dt><dd>{_escape(openrouter_model or "OPENROUTER_DEFAULT_MODEL")}</dd>
-      </dl>
-    </div>
+  <div class="settings-email-forms">
+    <form class="inline-form" method="post" action="/settings/email">
+      <input type="hidden" name="return_to" value="/settings?section=notifications">
+      <label>수신 주소
+        <input name="email" type="email" value="{_escape(connection["notification_email"] or "")}">
+      </label>
+      <button type="submit">코드 발송</button>
+    </form>
+    <form class="inline-form" method="post" action="/settings/email/verify">
+      <input type="hidden" name="return_to" value="/settings?section=notifications">
+      <label>인증 코드
+        <input name="code" inputmode="numeric">
+      </label>
+      <button type="submit">인증</button>
+    </form>
   </div>
-  <form class="settings-danger" method="post" action="/account/delete-local-data">
-    <button class="danger-button" type="submit">로컬 데이터 삭제</button>
-  </form>
 </section>
 """
-    return page("설정", body, "settings", notice)
 
 
 def targets_page(targets: list[sqlite3.Row], notice: str | None = None) -> str:
@@ -908,42 +923,3 @@ def _short_value(value: object) -> str:
 def _truncate(value: str, limit: int = 140) -> str:
     value = value.strip()
     return value if len(value) <= limit else value[: limit - 1] + "…"
-
-
-def account_page(connection: sqlite3.Row, notice: str | None = None) -> str:
-    body = f"""
-<section class="page-head">
-  <div>
-    <p class="eyebrow">토큰과 API 키 관리</p>
-    <h1>계정/API 키</h1>
-  </div>
-</section>
-
-<section class="columns">
-  <div class="panel">
-    <div class="panel-head"><h2>Notion</h2>{status_pill(bool(connection["notion_access_token_encrypted"]))}</div>
-    <dl class="kv">
-      <dt>워크스페이스</dt><dd>{_escape(connection["notion_workspace_name"] or connection["notion_workspace_id"] or "-")}</dd>
-      <dt>수정함</dt><dd>{_escape(connection["notion_inbox_url"] or connection["notion_inbox_database_id"] or "-")}</dd>
-    </dl>
-    <div class="actions">
-      <a class="button primary" href="/auth/notion/start">Notion 연결</a>
-      <form method="post" action="/account/disconnect/notion"><button class="ghost" type="submit">연결 해제</button></form>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="panel-head"><h2>OpenRouter</h2>{status_pill(True, "서버 설정", "필요")}</div>
-    <dl class="kv">
-      <dt>API 키</dt><dd>환경변수 <code>OPENROUTER_API_KEY</code></dd>
-    </dl>
-  </div>
-</section>
-
-<section class="panel danger">
-  <div class="panel-head"><h2>데이터</h2></div>
-  <form method="post" action="/account/delete-local-data">
-    <button class="danger-button" type="submit">로컬 데이터 삭제</button>
-  </form>
-</section>
-"""
-    return page("계정/API 키", body, "account", notice)
