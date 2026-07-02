@@ -158,6 +158,11 @@ class NotionService:
             raise NotionError(f"Notion API 오류: {exc.status or ''} {exc.body or exc}") from exc
         return response.data
 
+    @staticmethod
+    def is_not_found_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "404" in message or "object_not_found" in message or "could not find" in message or "archived" in message
+
     def retrieve_page(self, user_id: int, page_id: str) -> dict[str, Any]:
         return self._request(user_id, "GET", f"/pages/{page_id}")
 
@@ -880,8 +885,24 @@ class NotionService:
     def ensure_inbox_database(self, user_id: int, parent_page_id: str | None) -> tuple[str | None, str | None]:
         connection = self.db.connection_for_user(user_id)
         if connection["notion_inbox_database_id"]:
-            self._ensure_inbox_database_title(user_id, connection["notion_inbox_database_id"])
-            return connection["notion_inbox_database_id"], connection["notion_inbox_url"]
+            try:
+                self.retrieve_database(user_id, connection["notion_inbox_database_id"])
+                self._ensure_inbox_database_title(user_id, connection["notion_inbox_database_id"])
+                return connection["notion_inbox_database_id"], connection["notion_inbox_url"]
+            except Exception as exc:
+                if self.is_not_found_error(exc):
+                    self.db.log(
+                        "inbox_database_missing_renewing",
+                        user_id=user_id,
+                        level="warning",
+                        payload={"database_id": connection["notion_inbox_database_id"], "error": str(exc)},
+                    )
+                    self.db.update(
+                        "UPDATE connections SET notion_inbox_database_id = NULL, notion_inbox_url = NULL, updated_at = ? WHERE user_id = ?",
+                        (utc_now_iso(), user_id),
+                    )
+                else:
+                    raise
         if not parent_page_id:
             return None, None
         payload = {
@@ -989,12 +1010,27 @@ class NotionService:
         database_id = connection["notion_inbox_database_id"]
         if not database_id:
             return []
-        data = self._request(
-            user_id,
-            "POST",
-            f"/databases/{database_id}/query",
-            {"filter": {"property": "상태", "select": {"equals": "승인"}}, "page_size": 100},
-        )
+        try:
+            data = self._request(
+                user_id,
+                "POST",
+                f"/databases/{database_id}/query",
+                {"filter": {"property": "상태", "select": {"equals": "승인"}}, "page_size": 100},
+            )
+        except Exception as exc:
+            if self.is_not_found_error(exc):
+                self.db.log(
+                    "inbox_database_not_found_reset",
+                    user_id=user_id,
+                    level="warning",
+                    payload={"database_id": database_id, "error": str(exc)},
+                )
+                self.db.update(
+                    "UPDATE connections SET notion_inbox_database_id = NULL, notion_inbox_url = NULL, updated_at = ? WHERE user_id = ?",
+                    (utc_now_iso(), user_id),
+                )
+                return []
+            raise
         return [proposal for row in data.get("results", []) if (proposal := self._approved_from_page(row))]
 
     def _approved_from_page(self, page: dict[str, Any]) -> ApprovedProposal | None:
@@ -1025,7 +1061,18 @@ class NotionService:
             properties["반영 시각"] = {"date": {"start": utc_now_iso()}}
         if error:
             properties["반영 오류"] = {"rich_text": [_text(_limit(error, 1900))]}
-        self._request(user_id, "PATCH", f"/pages/{notion_page_id}", {"properties": properties})
+        try:
+            self._request(user_id, "PATCH", f"/pages/{notion_page_id}", {"properties": properties})
+        except Exception as exc:
+            if self.is_not_found_error(exc):
+                self.db.log(
+                    "proposal_page_missing",
+                    user_id=user_id,
+                    level="warning",
+                    payload={"page_id": notion_page_id, "error": str(exc)},
+                )
+            else:
+                raise
 
     def retrieve_block(self, user_id: int, block_id: str) -> dict[str, Any]:
         return self._request(user_id, "GET", f"/blocks/{block_id}")

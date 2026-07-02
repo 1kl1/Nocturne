@@ -759,6 +759,42 @@ class CoreTest(unittest.TestCase):
         self.assertIn('name="search_recent_trends"', agent_html)
         self.assertNotIn("페이지 설정", agent_html)
 
+    def test_inbox_database_404_renewal(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test.sqlite3"
+            settings = settings_for(db_path)
+            db = Database(settings)
+            db.initialize()
+            service = NotionService(settings, db, SecretBox("unit-test-secret"))
+            user = db.user_for_notion_oauth({"workspace_id": "workspace-a", "bot_id": "bot-id"})
+            service.save_oauth_connection(user["id"], {"access_token": "token", "workspace_name": "workspace", "bot_id": "bot-id"})
+            db.update(
+                "UPDATE connections SET notion_inbox_database_id = ?, notion_inbox_url = ? WHERE user_id = ?",
+                ("deleted-db-id", "http://notion.so/deleted", user["id"]),
+            )
+
+            calls: list[dict[str, Any]] = []
+
+            def fake_request(user_id: int, method: str, path: str, payload: Any = None, retries: int = 2) -> Any:
+                calls.append({"method": method, "path": path, "payload": payload})
+                if path == "/databases/deleted-db-id" or path == "/databases/deleted-db-id/query":
+                    from app.services.notion_service import NotionError
+                    raise NotionError('Notion API 오류: 404 {"object":"error","status":404,"code":"object_not_found","message":"Could not find database"}')
+                if method == "POST" and path == "/databases":
+                    return {"id": "new-db-id", "url": "http://notion.so/new-db"}
+                return {}
+
+            service._request = fake_request  # type: ignore[method-assign]
+
+            proposals = service.query_approved_proposals(user["id"])
+            self.assertEqual(proposals, [])
+            conn = db.connection_for_user(user["id"])
+            self.assertIsNone(conn["notion_inbox_database_id"])
+
+            new_id, new_url = service.ensure_inbox_database(user["id"], "parent-page-id")
+            self.assertEqual(new_id, "new-db-id")
+            self.assertEqual(new_url, "http://notion.so/new-db")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -97,7 +97,11 @@ class AgentHarness:
             self._log_tool_call(user_id, run_id, "notion.expand_targets", "start")
             pages = self.notion.expand_targets(user_id)
             if not pages:
-                raise RuntimeError("점검할 페이지를 찾지 못했습니다.")
+                finished_at = utc_now_iso()
+                msg = "점검할 페이지를 찾지 못했습니다. Notion에서 페이지가 삭제되었거나 접근 권한이 해제되었을 수 있습니다."
+                self.db.update_run(run_id, status="partial_success", finished_at=finished_at, error_message=msg, **counts)
+                self.db.log("run_finished", user_id=user_id, run_id=run_id, payload={"status": "partial_success", "error": msg, **counts})
+                return run_id
             self._log_tool_call(user_id, run_id, "notion.expand_targets", "success", {"pages": len(pages)})
             counts["scanned_page_count"] = len(pages)
             self._log_tool_call(user_id, run_id, "agent.filter_recent", "start", {"last_success": last_success})
