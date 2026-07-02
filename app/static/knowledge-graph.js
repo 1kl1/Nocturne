@@ -7,8 +7,6 @@
   const nodeCountEl = root.querySelector("[data-graph-node-count]");
   const linkCountEl = root.querySelector("[data-graph-link-count]");
   const proposalCountEl = root.querySelector("[data-graph-proposal-count]");
-  const syncButton = root.querySelector("[data-graph-sync]");
-  const fitButton = root.querySelector("[data-graph-fit]");
   const inspector = {
     kicker: root.querySelector("[data-inspector-kicker]"),
     title: root.querySelector("[data-inspector-title]"),
@@ -21,6 +19,10 @@
     graph: null,
     selected: null,
     hovered: null,
+    syncing: false,
+    fitTimers: [],
+    fitOnEngineStop: false,
+    autoSyncAttempted: false,
     data: { nodes: [], links: [], meta: {} },
   };
 
@@ -33,12 +35,6 @@
     }
     ensureGraph();
     loadGraph();
-    syncButton.addEventListener("click", function () {
-      syncGraph();
-    });
-    fitButton.addEventListener("click", function () {
-      fitGraph();
-    });
     window.addEventListener("resize", resizeGraph);
     if ("ResizeObserver" in window) {
       new ResizeObserver(resizeGraph).observe(canvas);
@@ -84,6 +80,11 @@
       })
       .onNodeClick(function (node) {
         selectNode(node);
+      })
+      .onEngineStop(function () {
+        if (!state.fitOnEngineStop || state.selected) return;
+        state.fitOnEngineStop = false;
+        fitGraph({ duration: 240, padding: 76 });
       });
     state.graph.d3Force("charge").strength(-72);
     state.graph.d3Force("link").distance(function (link) {
@@ -162,26 +163,27 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "그래프를 불러오지 못했습니다.");
       renderData(data);
-      if (data.meta && data.meta.needsSync) syncGraph({ quiet: true });
+      if (shouldAutoSync(state.data.meta)) syncGraph({ quiet: true });
     } catch (error) {
       setStatus(error.message || "그래프 오류");
     }
   }
 
   async function syncGraph(options) {
+    if (state.syncing) return;
     const quiet = options && options.quiet;
-    syncButton.disabled = true;
+    state.syncing = true;
     if (!quiet) setStatus("Notion 동기화 중");
     try {
       const response = await fetch("/api/knowledge-graph/sync", { method: "POST" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "동기화 실패");
-      renderData(data);
+      renderData(data, { fromSync: true });
       setStatus(syncStatusText(data.meta));
     } catch (error) {
       setStatus(error.message || "동기화 실패");
     } finally {
-      syncButton.disabled = false;
+      state.syncing = false;
     }
   }
 
@@ -209,8 +211,9 @@
     if (!options || !options.fromCache) writeCache(state.data);
     setStatus(options && options.fromCache ? "로컬 캐시" : syncStatusText(state.data.meta));
     if (state.graph) {
+      resizeGraph();
       state.graph.graphData({ nodes: state.data.nodes, links: state.data.links });
-      requestAnimationFrame(fitGraph);
+      scheduleFitGraph();
     }
     if (state.selected) {
       const selected = state.data.nodes.find(function (node) {
@@ -308,9 +311,32 @@
     return link;
   }
 
-  function fitGraph() {
+  function scheduleFitGraph() {
+    clearFitTimers();
     if (!state.graph || !state.data.nodes.length) return;
-    state.graph.zoomToFit(420, 54);
+    state.fitOnEngineStop = true;
+    fitGraph({ duration: 0, padding: 84 });
+    [120, 360, 820, 1400].forEach(function (delay) {
+      state.fitTimers.push(
+        window.setTimeout(function () {
+          if (!state.selected) fitGraph({ duration: delay < 400 ? 0 : 260, padding: 76 });
+        }, delay)
+      );
+    });
+  }
+
+  function clearFitTimers() {
+    state.fitTimers.forEach(function (timer) {
+      window.clearTimeout(timer);
+    });
+    state.fitTimers = [];
+  }
+
+  function fitGraph(options) {
+    if (!state.graph || !state.data.nodes.length) return;
+    const duration = options && Number.isFinite(options.duration) ? options.duration : 240;
+    const padding = options && Number.isFinite(options.padding) ? options.padding : 76;
+    state.graph.zoomToFit(duration, padding);
   }
 
   function resizeGraph() {
@@ -318,6 +344,18 @@
     const rect = canvas.getBoundingClientRect();
     state.graph.width(Math.max(280, rect.width));
     state.graph.height(Math.max(360, rect.height));
+    if (state.data.nodes.length && !state.selected) {
+      window.requestAnimationFrame(function () {
+        fitGraph({ duration: 0, padding: 84 });
+      });
+    }
+  }
+
+  function shouldAutoSync(meta) {
+    if (state.autoSyncAttempted || !meta || !meta.hasTargets) return false;
+    const shouldSync = meta.needsSync || meta.syncStatus === "never" || meta.syncStatus === "failed";
+    state.autoSyncAttempted = shouldSync;
+    return shouldSync;
   }
 
   function syncStatusText(meta) {

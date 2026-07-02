@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import ui
+from app.agent.harness import AgentHarness
 from app.agent.types import ProposalCandidate, TextBlock
 from app.agent.validator import ProposalValidator
 from app.config import Settings
@@ -382,6 +383,9 @@ class CoreTest(unittest.TestCase):
         self.assertIn("0건", html)
         self.assertIn("data-knowledge-graph", html)
         self.assertIn("knowledge-graph.js", html)
+        self.assertNotIn("data-graph-sync", html)
+        self.assertNotIn("data-graph-fit", html)
+        self.assertNotIn('value="/dashboard"', html)
         self.assertIn("run-board-row", html)
         self.assertIn("Roadmap", html)
         self.assertNotIn("page-head home-head", html)
@@ -414,9 +418,41 @@ class CoreTest(unittest.TestCase):
         self.assertIn('name="limit"', html)
         self.assertIn('<option value="100" selected>최근 100개</option>', html)
         self.assertIn('/runs?limit=100', html)
+        self.assertIn("data-runs-live", html)
+        self.assertIn("data-runs-refresh", html)
+        self.assertIn("runs.js", html)
         self.assertIn("0건", html)
         self.assertIn("점검 오류 1건", html)
         self.assertNotIn("실패 없음", html)
+
+    def test_failed_pages_from_previous_run_are_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = settings_for(Path(tmp) / "nocturne.sqlite3")
+            db = Database(settings)
+            db.initialize()
+            user = db.default_user()
+            db.create_run(user["id"], "run_previous", None)
+            db.update_run("run_previous", status="partial_success", started_at=utc_now_iso(), finished_at=utc_now_iso())
+            db.log(
+                "page_scan_failed",
+                user_id=user["id"],
+                run_id="run_previous",
+                level="warning",
+                payload={"page_id": "page-failed", "title": "Broken", "error": "timeout"},
+            )
+            db.create_run(user["id"], "run_current", db.last_successful_scan_at(user["id"]))
+
+            harness = AgentHarness(
+                settings,
+                db,
+                SecretBox("unit-test-secret"),
+                SimpleNamespace(),
+                SimpleNamespace(),
+                SimpleNamespace(),
+                SimpleNamespace(),
+            )
+
+            self.assertEqual(harness._failed_page_ids_from_previous_run(user["id"], "run_current"), {"page-failed"})
 
     def test_settings_switches_one_section_and_nav_uses_icons(self) -> None:
         settings = {"scan_time": "02:00", "notify_time": "08:00", "timezone": "Asia/Seoul"}
@@ -433,6 +469,8 @@ class CoreTest(unittest.TestCase):
         self.assertIn("<svg", page_html)
         self.assertIn("페이지 설정", page_html)
         self.assertIn("로그아웃", page_html)
+        self.assertIn("data-target-exclusions", page_html)
+        self.assertNotIn("제외 페이지 ID", page_html)
         self.assertNotIn("알림 설정", page_html)
         self.assertNotIn("계정/API", page_html)
         self.assertNotIn("OpenRouter", page_html)

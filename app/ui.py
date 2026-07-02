@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.security import mask_secret
 from app.time_utils import parse_iso
 
-ASSET_VERSION = "20260702j"
+ASSET_VERSION = "20260702k"
 
 
 EVENT_LABELS = {
@@ -71,6 +71,7 @@ def page(title: str, body: str, active: str = "home", notice: str | None = None)
     )
     notice_html = f'<div class="notice">{_escape(notice)}</div>' if notice else ""
     target_picker_script = f'<script src="/static/target-picker.js?v={ASSET_VERSION}"></script>' if "data-target-picker" in body else ""
+    runs_script = f'<script src="/static/runs.js?v={ASSET_VERSION}"></script>' if "data-runs-live" in body else ""
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -90,6 +91,7 @@ def page(title: str, body: str, active: str = "home", notice: str | None = None)
     {body}
   </main>
   {target_picker_script}
+  {runs_script}
 </body>
 </html>"""
 
@@ -331,14 +333,6 @@ def _knowledge_graph_view() -> str:
       <div><dt>연결</dt><dd data-graph-link-count>0</dd></div>
       <div><dt>제안</dt><dd data-graph-proposal-count>0</dd></div>
     </dl>
-    <div class="graph-actions">
-      <button type="button" data-graph-sync>동기화</button>
-      <button type="button" data-graph-fit>맞춤</button>
-      <form method="post" action="/runs/manual">
-        <input type="hidden" name="return_to" value="/dashboard">
-        <button class="primary" type="submit">점검</button>
-      </form>
-    </div>
   </header>
   <div class="graph-status-line">
     <span class="graph-dot knowledge"></span><span>사용자 지식</span>
@@ -552,9 +546,6 @@ def _settings_pages_view(connection: sqlite3.Row, rows: str) -> str:
   <form class="form-grid target-picker-form" method="post" action="/targets" data-target-form>
     <input type="hidden" name="return_to" value="/settings?section=pages">
     {target_picker_fields()}
-    <label>제외 페이지 ID
-      <input name="excluded_page_ids" placeholder="쉼표로 구분">
-    </label>
     <button class="primary" type="submit">대상 추가</button>
   </form>
   <div class="table-wrap settings-table">
@@ -625,9 +616,6 @@ def targets_page(targets: list[sqlite3.Row], notice: str | None = None) -> str:
 <section class="panel">
   <form class="form-grid target-picker-form" method="post" action="/targets" data-target-form>
     {target_picker_fields()}
-    <label>제외 페이지 ID
-      <input name="excluded_page_ids" placeholder="쉼표로 구분">
-    </label>
     <button class="primary" type="submit">대상 추가</button>
   </form>
 </section>
@@ -663,11 +651,19 @@ def target_picker_fields() -> str:
       <div class="target-picker-status" data-target-status></div>
       <div class="target-result-list" data-target-results></div>
       <div class="target-selection" data-target-selection hidden></div>
+      <div class="target-exclusion-list" data-target-exclusions hidden>
+        <div class="target-exclusion-head">
+          <span>제외 페이지</span>
+          <strong data-target-exclusion-count>0개</strong>
+        </div>
+        <div class="target-exclusion-chips" data-target-exclusion-chips></div>
+      </div>
       <input type="hidden" name="notion_object_id">
       <input type="hidden" name="notion_object_type">
       <input type="hidden" name="title">
       <input type="hidden" name="url">
       <input type="hidden" name="include_children" value="1">
+      <input type="hidden" name="excluded_page_ids">
     </div>
 """
 
@@ -769,12 +765,17 @@ def runs_page(
     run_rows = "".join(run_row(run, timezone_name) for run in runs) or '<tr><td colspan="7" class="empty">실행 기록이 없습니다.</td></tr>'
     log_rows = "".join(log_row(log, timezone_name) for log in logs) or '<tr><td colspan="3" class="empty">감사 로그가 없습니다.</td></tr>'
     body = f"""
+<div class="runs-live" data-runs-live data-limit="{current_limit}" data-poll-seconds="10">
 <section class="page-head">
   <div>
     <p class="eyebrow">Agent run과 외부 호출 내역</p>
     <h1>실행 로그</h1>
   </div>
   <div class="actions">
+    <button class="runs-refresh-button" type="button" data-runs-refresh aria-label="실행 로그 새로고침" title="실행 로그 새로고침">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.2 6.5"/><path d="M3 12A9 9 0 0 1 18.2 5.5"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg>
+      <span data-runs-countdown>10</span><small>초</small>
+    </button>
     <form class="limit-form" method="get" action="/runs">
       <label>표시
         <select name="limit">{limit_options}</select>
@@ -793,7 +794,7 @@ def runs_page(
   <div class="table-wrap">
     <table class="run-table">
       <thead><tr><th>Run</th><th>상태</th><th>시간</th><th>페이지</th><th>제안</th><th>반영</th><th>알림</th></tr></thead>
-      <tbody>{run_rows}</tbody>
+      <tbody data-run-rows aria-live="polite">{run_rows}</tbody>
     </table>
   </div>
 </section>
@@ -803,10 +804,11 @@ def runs_page(
   <div class="table-wrap">
     <table class="audit-table">
       <thead><tr><th>시각</th><th>이벤트</th><th>내용</th></tr></thead>
-      <tbody>{log_rows}</tbody>
+      <tbody data-log-rows aria-live="polite">{log_rows}</tbody>
     </table>
   </div>
 </section>
+</div>
 """
     return page("로그", body, "logs", notice)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import timedelta
 
@@ -99,8 +100,20 @@ class AgentHarness:
             self._log_tool_call(user_id, run_id, "notion.expand_targets", "success", {"pages": len(pages)})
             counts["scanned_page_count"] = len(pages)
             self._log_tool_call(user_id, run_id, "agent.filter_recent", "start", {"last_success": last_success})
-            changed_pages = [page for page in pages if self._is_changed_since_last_success(user_id, page.page_id, page.last_edited_time, last_success)]
-            self._log_tool_call(user_id, run_id, "agent.filter_recent", "success", {"changed_pages": len(changed_pages)})
+            retry_page_ids = self._failed_page_ids_from_previous_run(user_id, run_id)
+            changed_pages = [
+                page
+                for page in pages
+                if page.page_id in retry_page_ids
+                or self._is_changed_since_last_success(user_id, page.page_id, page.last_edited_time, last_success)
+            ]
+            self._log_tool_call(
+                user_id,
+                run_id,
+                "agent.filter_recent",
+                "success",
+                {"changed_pages": len(changed_pages), "retry_pages": len(retry_page_ids)},
+            )
             counts["changed_page_count"] = len(changed_pages)
             page_lookup = {page.page_id: page for page in pages}
 
@@ -252,6 +265,38 @@ class AgentHarness:
         if applied and applied > last and edited <= applied + timedelta(minutes=5):
             return False
         return True
+
+    def _failed_page_ids_from_previous_run(self, user_id: int, current_run_id: str) -> set[str]:
+        latest = self.db.row(
+            """
+            SELECT run_id FROM runs
+            WHERE user_id = ?
+              AND run_id != ?
+              AND status IN ('success', 'partial_success', 'failed')
+              AND finished_at IS NOT NULL
+            ORDER BY finished_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (user_id, current_run_id),
+        )
+        if not latest:
+            return set()
+        logs = self.db.rows(
+            """
+            SELECT payload FROM audit_logs
+            WHERE user_id = ? AND run_id = ? AND event = 'page_scan_failed'
+            """,
+            (user_id, latest["run_id"]),
+        )
+        page_ids: set[str] = set()
+        for log in logs:
+            try:
+                payload = json.loads(log["payload"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and payload.get("page_id"):
+                page_ids.add(str(payload["page_id"]))
+        return page_ids
 
     def _mark_targets_checked(self, user_id: int, status: str) -> None:
         self.db.update(

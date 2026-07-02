@@ -11,7 +11,7 @@
   };
 
   function field(form, name) {
-    return form.querySelector(`[name="${name}"]`);
+    return (form && form.querySelector(`[name="${name}"]`)) || { value: "" };
   }
 
   function keyFor(item) {
@@ -47,6 +47,7 @@
         loaded: new Set(["workspace"]),
         loading: new Set(),
         items: new Map(),
+        excluded: new Map(),
       };
     }
     return picker._targetState;
@@ -81,6 +82,11 @@
     if (!form || !selection) {
       return;
     }
+    const state = stateFor(picker);
+    if (item.object_id && state.excluded.has(item.object_id)) {
+      state.excluded.delete(item.object_id);
+      syncExcludedField(picker);
+    }
     field(form, "notion_object_id").value = item.object_id || "";
     field(form, "notion_object_type").value = item.object_type || "";
     field(form, "title").value = item.title || "";
@@ -101,6 +107,7 @@
       row.classList.toggle("selected", selected);
       row.setAttribute("aria-selected", selected ? "true" : "false");
     });
+    renderTree(picker);
     setStatus(picker, "", "");
   }
 
@@ -153,6 +160,7 @@
     row.setAttribute("role", "treeitem");
     row.setAttribute("aria-selected", selectedId(picker) === item.object_id ? "true" : "false");
     row.classList.toggle("selected", selectedId(picker) === item.object_id);
+    row.classList.toggle("excluded", state.excluded.has(item.object_id || ""));
 
     const expander = document.createElement("button");
     expander.type = "button";
@@ -186,8 +194,89 @@
     type.className = "target-type";
     type.textContent = labels[item.object_type] || item.object_type || "";
 
-    row.replaceChildren(expander, select, type);
+    const exclude = document.createElement("button");
+    const excluded = state.excluded.has(item.object_id || "");
+    exclude.type = "button";
+    exclude.className = "target-exclude";
+    exclude.disabled = item.object_type !== "page";
+    exclude.title = excluded ? "제외 해제" : "제외";
+    exclude.setAttribute("aria-label", `${item.title || "Untitled"} ${excluded ? "제외 해제" : "제외"}`);
+    exclude.innerHTML = excluded
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 10.6A2 2 0 0 0 12 14a2 2 0 0 0 1.4-.6"/><path d="M9.9 4.2A9.8 9.8 0 0 1 12 4c5 0 8.5 4.5 9.7 6.3a3 3 0 0 1 0 3.4 18.5 18.5 0 0 1-2 2.5"/><path d="M6.1 6.1a18.7 18.7 0 0 0-3.8 4.2 3 3 0 0 0 0 3.4C3.5 15.5 7 20 12 20a9.7 9.7 0 0 0 4-.8"/></svg>';
+    exclude.addEventListener("click", () => toggleExcluded(picker, item));
+
+    row.replaceChildren(expander, select, type, exclude);
     return row;
+  }
+
+  function toggleExcluded(picker, item) {
+    if (item.object_type !== "page") {
+      setStatus(picker, "페이지 항목만 제외할 수 있습니다.", "error");
+      return;
+    }
+    const state = stateFor(picker);
+    const id = item.object_id || "";
+    if (!id) {
+      return;
+    }
+    const form = picker.closest("form");
+    if (form && field(form, "notion_object_id").value === id) {
+      setStatus(picker, "점검 대상으로 선택한 페이지는 제외할 수 없습니다.", "error");
+      return;
+    }
+    if (state.excluded.has(id)) {
+      state.excluded.delete(id);
+      setStatus(picker, "제외 목록에서 제거했습니다.", "ok");
+    } else {
+      state.excluded.set(id, item);
+      setStatus(picker, "제외 페이지를 추가했습니다.", "ok");
+    }
+    syncExcludedField(picker);
+    renderTree(picker);
+  }
+
+  function syncExcludedField(picker) {
+    const form = picker.closest("form");
+    const state = stateFor(picker);
+    if (form) {
+      field(form, "excluded_page_ids").value = Array.from(state.excluded.keys()).join(",");
+    }
+    renderExclusions(picker);
+  }
+
+  function renderExclusions(picker) {
+    const state = stateFor(picker);
+    const wrapper = picker.querySelector("[data-target-exclusions]");
+    const chips = picker.querySelector("[data-target-exclusion-chips]");
+    const count = picker.querySelector("[data-target-exclusion-count]");
+    if (!wrapper || !chips) {
+      return;
+    }
+    const excluded = Array.from(state.excluded.values());
+    wrapper.hidden = !excluded.length;
+    if (count) {
+      count.textContent = `${excluded.length}개`;
+    }
+    chips.replaceChildren(
+      ...excluded.map((item) => {
+        const chip = document.createElement("span");
+        chip.className = "target-exclusion-chip";
+
+        const title = document.createElement("span");
+        title.textContent = item.title || "Untitled";
+        title.title = item.title || "Untitled";
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `${item.title || "Untitled"} 제외 해제`);
+        remove.addEventListener("click", () => toggleExcluded(picker, item));
+
+        chip.replaceChildren(title, remove);
+        return chip;
+      })
+    );
   }
 
   function appendItems(fragment, picker, items, level) {

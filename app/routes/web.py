@@ -372,53 +372,38 @@ def runs(request: Request, notice: str | None = None, limit: int = Query(20)) ->
     db = request.app.state.db
     user = db.default_user()
     selected_limit = limit if limit in {20, 50, 100} else 20
-    run_rows = db.rows(
-        """
-        SELECT
-            r.*,
-            COALESCE(
-                (
-                    SELECT COUNT(*)
-                    FROM audit_logs l
-                    WHERE l.run_id = r.run_id
-                      AND (
-                        l.event IN (
-                            'approval_apply_failed',
-                            'page_scan_failed',
-                            'proposal_write_failed',
-                            'run_failed',
-                            'target_expand_failed'
-                        )
-                        OR (l.event = 'agent_tool_call' AND l.level IN ('warning', 'error'))
-                      )
-                ),
-                0
-            ) AS agent_error_count
-        FROM runs r
-        WHERE r.user_id = ?
-        ORDER BY r.created_at DESC
-        LIMIT ?
-        """,
-        (user["id"], selected_limit),
+    run_rows, logs, timezone_name = _runs_snapshot(db, user["id"], selected_limit)
+    return ui.runs_page(run_rows, logs, notice, timezone_name, selected_limit)
+
+
+@router.get("/api/runs")
+def runs_api(request: Request, limit: int = Query(20)) -> JSONResponse:
+    db = request.app.state.db
+    user = db.default_user()
+    selected_limit = limit if limit in {20, 50, 100} else 20
+    run_rows, logs, timezone_name = _runs_snapshot(db, user["id"], selected_limit)
+    return JSONResponse(
+        {
+            "limit": selected_limit,
+            "fetchedAt": utc_now_iso(),
+            "runCount": len(run_rows),
+            "logCount": len(logs),
+            "runRows": "".join(ui.run_row(run, timezone_name) for run in run_rows)
+            or '<tr><td colspan="7" class="empty">실행 기록이 없습니다.</td></tr>',
+            "logRows": "".join(ui.log_row(log, timezone_name) for log in logs)
+            or '<tr><td colspan="3" class="empty">감사 로그가 없습니다.</td></tr>',
+        }
     )
-    logs = db.rows(
-        """
-        SELECT * FROM audit_logs
-        WHERE user_id IS NULL OR user_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-        """,
-        (user["id"], selected_limit),
-    )
-    settings = db.notification_settings_for_user(user["id"])
-    return ui.runs_page(run_rows, logs, notice, settings["timezone"], selected_limit)
 
 
 @router.post("/runs/manual")
 def manual_run(request: Request, background_tasks: BackgroundTasks, return_to: str = Form("")) -> RedirectResponse:
     user = request.app.state.db.default_user()
     background_tasks.add_task(request.app.state.harness.run_for_user, user["id"], manual=True)
-    return _redirect(_safe_return(return_to, "/runs"), "수동 점검을 시작했습니다.")
+    target = _safe_return(return_to, "/runs")
+    if not target.startswith("/runs"):
+        target = "/runs"
+    return _redirect(target, "수동 점검을 시작했습니다.")
 
 
 @router.post("/apply-approved")
@@ -500,6 +485,49 @@ def _safe_return(path: str | None, default: str) -> str:
     return path
 
 
+def _runs_snapshot(db: object, user_id: int, selected_limit: int) -> tuple[list[object], list[object], str]:
+    run_rows = db.rows(
+        """
+        SELECT
+            r.*,
+            COALESCE(
+                (
+                    SELECT COUNT(*)
+                    FROM audit_logs l
+                    WHERE l.run_id = r.run_id
+                      AND (
+                        l.event IN (
+                            'approval_apply_failed',
+                            'page_scan_failed',
+                            'proposal_write_failed',
+                            'run_failed',
+                            'target_expand_failed'
+                        )
+                        OR (l.event = 'agent_tool_call' AND l.level IN ('warning', 'error'))
+                      )
+                ),
+                0
+            ) AS agent_error_count
+        FROM runs r
+        WHERE r.user_id = ?
+        ORDER BY r.created_at DESC
+        LIMIT ?
+        """,
+        (user_id, selected_limit),
+    )
+    logs = db.rows(
+        """
+        SELECT * FROM audit_logs
+        WHERE user_id IS NULL OR user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, selected_limit),
+    )
+    settings = db.notification_settings_for_user(user_id)
+    return run_rows, logs, settings["timezone"]
+
+
 def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) -> list[object]:
     if not latest_run:
         return []
@@ -560,6 +588,7 @@ def _dashboard_run_items(db: object, user_id: int, latest_run: object | None) ->
 
 
 def _knowledge_graph_payload(db: object, user_id: int) -> dict[str, object]:
+    active_targets = db.active_targets(user_id)
     node_rows = db.rows(
         """
         SELECT * FROM knowledge_graph_nodes
@@ -694,7 +723,8 @@ def _knowledge_graph_payload(db: object, user_id: int) -> dict[str, object]:
             "lastSyncedAt": sync["last_synced_at"] if sync else None,
             "syncStatus": sync["status"] if sync else "never",
             "syncError": sync["error_message"] if sync else None,
-            "needsSync": not bool(node_rows) and bool(db.active_targets(user_id)),
+            "hasTargets": bool(active_targets),
+            "needsSync": bool(active_targets) and (not bool(node_rows) or sync is None or sync["status"] == "failed"),
         },
     }
 
