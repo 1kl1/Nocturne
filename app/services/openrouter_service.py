@@ -48,14 +48,14 @@ class OpenRouterService:
                 {
                     "role": "system",
                     "content": (
-                        "You are Nocturne, an agent that audits Notion notes. "
-                        "Return only a JSON array matching the requested schema. "
-                        "Do not modify source text without evidence. Prefer small edits."
+                        "You are Nocturne, an expert AI agent that thoroughly and proactively audits Notion notes. "
+                        "Actively detect factual errors, technical mistakes, logical contradictions, outdated explanations, or critical omissions. "
+                        "Return only a JSON array matching the requested schema."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.1,
+            "temperature": 0.2,
         }
         if self.settings.openrouter_web_search_enabled or _agent_bool(agent_settings, "openrouter_live_search"):
             plugin: dict[str, Any] = {
@@ -124,24 +124,24 @@ class OpenRouterService:
             recent_trend_rule = "- 문서 주제와 관련된 최근 동향, 변경된 표준, 최신 API/정책을 우선 확인한다.\n"
         strict_source_rule = ""
         if _agent_bool(agent_settings, "strict_source_mode", default=True):
-            strict_source_rule = "- 명확한 내부 근거 또는 신뢰 가능한 외부 출처가 없으면 제안을 만들지 않는다.\n"
+            strict_source_rule = "- 외부 출처 URL이나 문서 내부 문맥/기술 표준에 따른 논리적 근거가 명확한 사항을 우선하여 제안한다.\n"
         additional_context = str(_agent_value(agent_settings, "additional_context", "") or "").strip()
         context_block = f"\n\nUSER_AGENT_CONTEXT:\n{additional_context}" if additional_context else ""
         return (
-            "다음 Notion 블록에서 사실 오류, 누락, 모순만 찾아라.\n"
+            "다음 Notion 블록을 적극적이고 철저하게 검토하여 사실 오류, 기술적/논리적 오류, 설명 누락, 내부 모순을 빠짐없이 찾아내어 제안하라.\n"
             "출력은 JSON 배열만 허용한다. 스키마:\n"
             "[{\"issue_type\":\"error|omission|contradiction\",\"source_page_id\":\"...\","
             "\"block_id\":\"...\",\"original_sentence\":\"...\",\"suggested_sentence\":\"...\","
             "\"apply_mode\":\"replace|append\",\"rationale\":\"...\",\"source_urls\":[\"...\"],\"confidence\":0.0}]\n"
             "규칙:\n"
-            "- 원문은 필요한 최소 범위만 고친다.\n"
+            "- 틀린 내용, 부정확한 개념, 계산 오류나 오해의 소지가 있는 문장이 있다면 소극적으로 넘기지 말고 적극적으로 수정 제안을 작성한다.\n"
             "- replace는 original_sentence가 해당 block plain_text에 정확히 포함되어야 한다.\n"
             "- append는 original_sentence를 추가 위치의 앵커 문장으로 둔다.\n"
-            "- 사실 오류는 source_urls 또는 명확한 내부 근거가 있어야 한다.\n"
+            "- 사실 오류(error)나 모순의 rationale에는 왜 오류인지 판단한 이유(문서 내부 문맥, 논리적 오류, 기술 표준 등)를 구체적으로 기술한다.\n"
             f"{live_web_rule}"
             f"{recent_trend_rule}"
             f"{strict_source_rule}"
-            "- 확신이 낮으면 confidence를 낮게 둔다.\n\n"
+            "- 발견한 오류나 문제점이 명확하다면 높은 confidence(0.7~0.95)를 부여한다.\n\n"
             f"BLOCKS:\n{json.dumps(block_lines, ensure_ascii=False)}\n\n"
             f"WEB_SEARCH_RESULTS:\n{json.dumps(sources, ensure_ascii=False)}"
             f"{context_block}"

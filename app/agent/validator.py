@@ -27,7 +27,7 @@ class ProposalValidator:
                 proposal.status = "보류"
                 result.held.append(proposal)
                 continue
-            if proposal.issue_type == "error" and not proposal.source_urls and "내부" not in proposal.rationale:
+            if proposal.issue_type == "error" and not proposal.source_urls and not any(kw in proposal.rationale for kw in ("내부", "문서", "본문", "문맥", "맥락", "표준", "논리", "계산", "오류", "잘못", "오타", "설명")):
                 proposal.status = "보류"
                 result.held.append(proposal)
                 continue

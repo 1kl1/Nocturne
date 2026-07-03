@@ -77,7 +77,7 @@ def get_settings() -> Settings:
         notion_client_secret=os.getenv("NOTION_CLIENT_SECRET", ""),
         notion_redirect_uri=os.getenv("NOTION_REDIRECT_URI", "http://localhost:8000/auth/notion/callback"),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-        openrouter_default_model=os.getenv("OPENROUTER_DEFAULT_MODEL", "openai/gpt-4.1-mini"),
+        openrouter_default_model=os.getenv("OPENROUTER_DEFAULT_MODEL", "deepseek/deepseek-v4-flash"),
         openrouter_app_name=os.getenv("OPENROUTER_APP_NAME", "Nocturne"),
         openrouter_app_url=os.getenv("OPENROUTER_APP_URL", os.getenv("APP_URL", "http://localhost:8000")),
         openrouter_web_search_enabled=_bool_env("OPENROUTER_WEB_SEARCH_ENABLED", False),
